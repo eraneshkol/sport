@@ -118,11 +118,7 @@ function switchToTimerTab() {
 
 // ===== Config inputs =====
 const categoryPicker = document.getElementById('categoryPicker');
-const workMin = document.getElementById('workMin');
-const workSec = document.getElementById('workSec');
-const restMin = document.getElementById('restMin');
-const restSec = document.getElementById('restSec');
-const roundsInput = document.getElementById('roundsInput');
+const timerConfigSummary = document.getElementById('timerConfigSummary');
 
 function renderCategoryPicker() {
   categoryPicker.innerHTML = '';
@@ -135,13 +131,9 @@ function renderCategoryPicker() {
   categoryPicker.value = state.selectedCategoryId;
 }
 
-function loadConfigInputsFromCategory() {
+function updateTimerConfigSummary() {
   const cat = getSelectedCategory();
-  workMin.value = Math.floor(cat.workSec / 60);
-  workSec.value = cat.workSec % 60;
-  restMin.value = Math.floor(cat.restSec / 60);
-  restSec.value = cat.restSec % 60;
-  roundsInput.value = cat.rounds;
+  timerConfigSummary.textContent = `עבודה ${fmtTime(cat.workSec)} · מנוחה ${fmtTime(cat.restSec)} · ${cat.rounds} סיבובים`;
 }
 
 function clampInput(el, min, max) {
@@ -152,31 +144,11 @@ function clampInput(el, min, max) {
   return v;
 }
 
-function saveConfigInputsToCategory() {
-  const cat = getSelectedCategory();
-  const wm = clampInput(workMin, 0, 59);
-  const ws = clampInput(workSec, 0, 59);
-  const rm = clampInput(restMin, 0, 59);
-  const rs = clampInput(restSec, 0, 59);
-  const rounds = clampInput(roundsInput, 1, 99);
-  cat.workSec = wm * 60 + ws;
-  cat.restSec = rm * 60 + rs;
-  cat.rounds = rounds;
-  if (cat.workSec === 0) { cat.workSec = 1; workSec.value = 1; }
-  saveState();
-  renderCategoryList();
-  resetTimerToConfig();
-}
-
-[workMin, workSec, restMin, restSec, roundsInput].forEach(el => {
-  el.addEventListener('change', saveConfigInputsToCategory);
-});
-
 categoryPicker.addEventListener('change', () => {
   state.selectedCategoryId = categoryPicker.value;
   saveState();
   stopTimer();
-  loadConfigInputsFromCategory();
+  updateTimerConfigSummary();
   resetTimerToConfig();
 });
 
@@ -218,7 +190,7 @@ function renderCategoryList() {
       saveState();
       renderCategoryPicker();
       stopTimer();
-      loadConfigInputsFromCategory();
+      updateTimerConfigSummary();
       resetTimerToConfig();
       switchToTimerTab();
     });
@@ -239,7 +211,7 @@ function renderCategoryList() {
       }
       saveState();
       renderCategoryPicker();
-      loadConfigInputsFromCategory();
+      updateTimerConfigSummary();
       resetTimerToConfig();
       renderCategoryList();
     });
@@ -248,14 +220,89 @@ function renderCategoryList() {
     top.appendChild(openBtn);
     top.appendChild(delBtn);
 
-    const summary = document.createElement('div');
-    summary.className = 'category-summary';
-    summary.textContent = `עבודה ${fmtTime(cat.workSec)} · מנוחה ${fmtTime(cat.restSec)} · ${cat.rounds} סיבובים`;
+    const configGrid = buildCategoryConfigFields(cat);
 
     li.appendChild(top);
-    li.appendChild(summary);
+    li.appendChild(configGrid);
     categoryList.appendChild(li);
   });
+}
+
+function applyCategoryChange(cat) {
+  saveState();
+  if (cat.id === state.selectedCategoryId) {
+    updateTimerConfigSummary();
+    resetTimerToConfig();
+  }
+}
+
+function buildCategoryConfigFields(cat) {
+  const grid = document.createElement('div');
+  grid.className = 'category-config-grid';
+
+  function timeField(labelText, getSec, setSec) {
+    const field = document.createElement('div');
+    field.className = 'category-config-field';
+    const label = document.createElement('label');
+    label.textContent = labelText;
+    const row = document.createElement('div');
+    row.className = 'time-input';
+    const minInput = document.createElement('input');
+    minInput.type = 'number';
+    minInput.min = '0';
+    minInput.max = '59';
+    minInput.value = Math.floor(getSec() / 60);
+    const colon = document.createElement('span');
+    colon.textContent = ':';
+    const secInput = document.createElement('input');
+    secInput.type = 'number';
+    secInput.min = '0';
+    secInput.max = '59';
+    secInput.value = getSec() % 60;
+
+    const commit = () => {
+      const m = clampInput(minInput, 0, 59);
+      const s = clampInput(secInput, 0, 59);
+      let total = m * 60 + s;
+      if (total === 0) { total = 1; secInput.value = 1; }
+      setSec(total);
+      applyCategoryChange(cat);
+    };
+    minInput.addEventListener('change', commit);
+    secInput.addEventListener('change', commit);
+
+    row.appendChild(minInput);
+    row.appendChild(colon);
+    row.appendChild(secInput);
+    field.appendChild(label);
+    field.appendChild(row);
+    return field;
+  }
+
+  const workField = timeField('זמן עבודה', () => cat.workSec, v => { cat.workSec = v; });
+  const restField = timeField('זמן מנוחה', () => cat.restSec, v => { cat.restSec = v; });
+
+  const roundsField = document.createElement('div');
+  roundsField.className = 'category-config-field';
+  const roundsLabel = document.createElement('label');
+  roundsLabel.textContent = 'סיבובים';
+  const roundsInput = document.createElement('input');
+  roundsInput.type = 'number';
+  roundsInput.min = '1';
+  roundsInput.max = '99';
+  roundsInput.className = 'rounds-input';
+  roundsInput.value = cat.rounds;
+  roundsInput.addEventListener('change', () => {
+    cat.rounds = clampInput(roundsInput, 1, 99);
+    applyCategoryChange(cat);
+  });
+  roundsField.appendChild(roundsLabel);
+  roundsField.appendChild(roundsInput);
+
+  grid.appendChild(workField);
+  grid.appendChild(restField);
+  grid.appendChild(roundsField);
+  return grid;
 }
 
 addCategoryBtn.addEventListener('click', () => {
@@ -264,7 +311,7 @@ addCategoryBtn.addEventListener('click', () => {
   state.selectedCategoryId = newCat.id;
   saveState();
   renderCategoryPicker();
-  loadConfigInputsFromCategory();
+  updateTimerConfigSummary();
   resetTimerToConfig();
   renderCategoryList();
 });
@@ -575,13 +622,10 @@ function renderRunView() {
   const total = wk.exercises.length;
   runProgress.textContent = `${doneCount} מתוך ${total} הושלמו`;
 
-  const firstUndoneIndex = wk.exercises.findIndex(e => !progress[e.id]);
-
-  wk.exercises.forEach((exercise, index) => {
+  wk.exercises.forEach(exercise => {
     const li = document.createElement('li');
     const isDone = !!progress[exercise.id];
-    const isCurrent = !isDone && index === firstUndoneIndex;
-    li.className = 'exercise-run-item' + (isDone ? ' done' : '') + (isCurrent ? ' current' : '');
+    li.className = 'exercise-run-item' + (isDone ? ' done' : '');
 
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
@@ -589,18 +633,16 @@ function renderRunView() {
     checkbox.addEventListener('change', () => {
       progress[exercise.id] = checkbox.checked;
       saveState();
-      renderRunView();
+      const allDone = wk.exercises.every(e => progress[e.id]);
+      if (checkbox.checked && allDone) {
+        celebrateWorkoutComplete(wk);
+      } else {
+        renderRunView();
+      }
     });
 
     const textWrap = document.createElement('div');
     textWrap.className = 'exercise-run-text';
-
-    if (isCurrent) {
-      const badge = document.createElement('div');
-      badge.className = 'exercise-run-badge';
-      badge.textContent = '▶ עכשיו';
-      textWrap.appendChild(badge);
-    }
 
     const nameEl = document.createElement('div');
     nameEl.className = 'exercise-run-name';
@@ -618,12 +660,52 @@ function renderRunView() {
     li.appendChild(textWrap);
     exerciseRunList.appendChild(li);
   });
+}
 
-  if (doneCount === total) {
-    const banner = document.createElement('li');
-    banner.className = 'workout-complete-banner';
-    banner.textContent = 'כל הכבוד! סיימת את האימון 🎉';
-    exerciseRunList.appendChild(banner);
+function celebrateWorkoutComplete(wk) {
+  playChime('finish');
+  playConfetti();
+
+  exerciseRunList.querySelectorAll('.exercise-run-item').forEach(item => item.classList.add('done'));
+  const banner = document.createElement('li');
+  banner.className = 'workout-complete-banner';
+  const nextWk = getNextWorkout(wk.id);
+  banner.innerHTML = '<div>כל הכבוד! סיימת את האימון 🎉</div>' +
+    (nextWk ? `<div class="sub">עוברים אוטומטית ל"${nextWk.name}"...</div>` : '');
+  exerciseRunList.appendChild(banner);
+
+  setTimeout(() => {
+    state.workoutProgress[wk.id] = {};
+    if (nextWk) {
+      state.activeWorkoutId = nextWk.id;
+    }
+    saveState();
+    renderActiveWorkoutPicker();
+    renderRunView();
+  }, 2200);
+}
+
+function getNextWorkout(currentId) {
+  if (state.workouts.length <= 1) return null;
+  const idx = state.workouts.findIndex(w => w.id === currentId);
+  const nextIdx = (idx + 1) % state.workouts.length;
+  return state.workouts[nextIdx];
+}
+
+// ---- Confetti ----
+function playConfetti() {
+  const colors = ['#22c55e', '#3b82f6', '#f59e0b', '#ef4444', '#a855f7', '#eab308'];
+  const count = 60;
+  for (let i = 0; i < count; i++) {
+    const piece = document.createElement('div');
+    piece.className = 'confetti-piece';
+    piece.style.left = Math.random() * 100 + 'vw';
+    piece.style.background = colors[Math.floor(Math.random() * colors.length)];
+    piece.style.animationDuration = (1.4 + Math.random() * 1.2) + 's';
+    piece.style.animationDelay = (Math.random() * 0.3) + 's';
+    piece.style.transform = `rotate(${Math.random() * 360}deg)`;
+    document.body.appendChild(piece);
+    setTimeout(() => piece.remove(), 3200);
   }
 }
 
@@ -803,7 +885,7 @@ saveWorkoutBtn.addEventListener('click', () => {
 
 // ===== Init =====
 renderCategoryPicker();
-loadConfigInputsFromCategory();
+updateTimerConfigSummary();
 resetTimerToConfig();
 renderCategoryList();
 renderActiveWorkoutPicker();

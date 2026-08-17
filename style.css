@@ -148,6 +148,21 @@ html, body {
   font-weight: bold;
 }
 
+.timer-config-summary {
+  text-align: center;
+  font-size: 18px;
+  font-weight: 600;
+  color: var(--text);
+  margin-top: 4px;
+}
+
+.timer-config-hint {
+  text-align: center;
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-top: -8px;
+}
+
 .timer-display-wrap {
   display: flex;
   flex-direction: column;
@@ -302,10 +317,41 @@ html, body {
   border-bottom: 1px solid var(--accent-dim);
 }
 
-.category-summary {
+.category-config-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.category-config-field {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.category-config-field:last-child {
+  grid-column: 1 / -1;
+}
+
+.category-config-field label {
   color: var(--text-dim);
-  font-size: 13px;
-  margin-top: 4px;
+  font-size: 12px;
+}
+
+.category-config-field .time-input input,
+.category-config-field .rounds-input {
+  width: 52px;
+  padding: 6px;
+  font-size: 15px;
+}
+
+.category-config-field .rounds-input {
+  width: 100%;
 }
 
 .icon-btn {
@@ -347,18 +393,12 @@ html, body {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 14px;
-  opacity: 0.55;
   transition: opacity 0.2s ease, border-color 0.2s ease;
 }
 
-.exercise-run-item.current {
-  opacity: 1;
-  border-color: var(--accent-dim);
-  box-shadow: 0 0 0 1px var(--accent-dim);
-}
-
 .exercise-run-item.done {
-  opacity: 0.4;
+  opacity: 0.6;
+  border-color: var(--accent-dim);
 }
 
 .exercise-run-item input[type="checkbox"] {
@@ -385,13 +425,6 @@ html, body {
   color: var(--text-dim);
 }
 
-.exercise-run-badge {
-  display: inline-block;
-  font-size: 11px;
-  color: var(--accent);
-  font-weight: 700;
-}
-
 .exercise-run-desc {
   color: var(--text-dim);
   font-size: 13px;
@@ -405,6 +438,35 @@ html, body {
   border: 1px solid var(--accent-dim);
   border-radius: var(--radius);
   font-size: 17px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.workout-complete-banner .sub {
+  font-size: 13px;
+  color: var(--text-dim);
+  font-weight: normal;
+}
+
+/* ===== Confetti ===== */
+.confetti-piece {
+  position: fixed;
+  top: -10px;
+  width: 8px;
+  height: 14px;
+  z-index: 999;
+  pointer-events: none;
+  animation-name: confetti-fall;
+  animation-timing-function: cubic-bezier(0.25, 0.46, 0.45, 0.94);
+  animation-fill-mode: forwards;
+}
+
+@keyframes confetti-fall {
+  to {
+    transform: translateY(105vh) rotate(600deg);
+    opacity: 0.2;
+  }
 }
 
 .workout-empty-state {

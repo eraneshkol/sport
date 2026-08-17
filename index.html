@@ -25,28 +25,8 @@
       <select id="categoryPicker"></select>
     </div>
 
-    <div class="config-grid">
-      <div class="config-field">
-        <label>זמן עבודה</label>
-        <div class="time-input">
-          <input type="number" id="workMin" min="0" max="59" value="1">
-          <span>:</span>
-          <input type="number" id="workSec" min="0" max="59" value="20">
-        </div>
-      </div>
-      <div class="config-field">
-        <label>זמן מנוחה</label>
-        <div class="time-input">
-          <input type="number" id="restMin" min="0" max="59" value="0">
-          <span>:</span>
-          <input type="number" id="restSec" min="0" max="59" value="30">
-        </div>
-      </div>
-      <div class="config-field">
-        <label>סיבובים</label>
-        <input type="number" id="roundsInput" min="1" max="99" value="3" class="rounds-input">
-      </div>
-    </div>
+    <div class="timer-config-summary" id="timerConfigSummary">עבודה 1:20 · מנוחה 0:30 · 3 סיבובים</div>
+    <div class="timer-config-hint">אפשר לערוך זמנים בטאב הקטגוריות</div>
 
     <div class="timer-display-wrap">
       <div class="phase-label" id="phaseLabel">מוכן</div>
