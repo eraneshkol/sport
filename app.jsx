@@ -1,4 +1,4 @@
-const { useState, useEffect, useRef, useReducer, useCallback } = React;
+const { useState, useEffect, useLayoutEffect, useRef, useReducer, useCallback } = React;
 
 // ===================== Storage / data model =====================
 
@@ -135,9 +135,6 @@ function Icon({ children, className = 'w-5 h-5', ...rest }) {
     </svg>
   );
 }
-const DumbbellIcon = (p) => <Icon {...p}><path d="M6.5 6.5 17.5 17.5M4 8l2-2 2 2-2 2-2-2ZM16 16l2-2 2 2-2 2-2-2ZM2.5 9.5l2-2M19.5 16.5l2-2M9.5 4.5l-2 2M14.5 19.5l2-2" /></Icon>;
-const ActivityIcon = (p) => <Icon {...p}><path d="M3 12h4l3 8 4-16 3 8h4" /></Icon>;
-const FootprintsIcon = (p) => <Icon {...p}><path d="M8 16c1.5 0 2.5-1 2.5-2.5S9.5 9 8 9s-2.5 1.5-2.5 2.5S6.5 16 8 16Z" /><path d="M16 21c1.5 0 2.5-1 2.5-2.5S17.5 14 16 14s-2.5 1.5-2.5 2.5S14.5 21 16 21Z" /><path d="M8 9c0-2 1-3 1-5M16 14c0-2 1-3 1-5" /></Icon>;
 const PlayIcon = (p) => <Icon {...p} fill="currentColor" stroke="none"><path d="M8 5v14l11-7L8 5Z" /></Icon>;
 const PauseIcon = (p) => <Icon {...p} fill="currentColor" stroke="none"><path d="M7 5h4v14H7zM13 5h4v14h-4z" /></Icon>;
 const ResetIcon = (p) => <Icon {...p}><path d="M4 4v6h6" /><path d="M20 20a9 9 0 1 0-3-16.7L4 10" /></Icon>;
@@ -152,13 +149,6 @@ const CheckIcon = (p) => <Icon {...p} fill="none" strokeWidth="2.4"><path d="M5 
 const ClockIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3.5 2" /></Icon>;
 const ChecklistIcon = (p) => <Icon {...p}><path d="M9 6h11M9 12h11M9 18h11" /><path d="m3.5 6 1.2 1.2L6.8 5" /><path d="m3.5 12 1.2 1.2L6.8 11" /><path d="m3.5 18 1.2 1.2L6.8 17" /></Icon>;
 const GridIcon = (p) => <Icon {...p}><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.8" /><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.8" /><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.8" /><rect x="13" y="13" width="7.5" height="7.5" rx="1.8" /></Icon>;
-
-function iconForCategory(name = '') {
-  const n = name.toLowerCase();
-  if (n.includes('walk') || n.includes('run') || n.includes('cardio')) return FootprintsIcon;
-  if (n.includes('ab') || n.includes('core') || n.includes('plank')) return ActivityIcon;
-  return DumbbellIcon;
-}
 
 // ===================== Small shared UI =====================
 
@@ -237,33 +227,108 @@ function IconButton({ onClick, children, className = '', title }) {
   );
 }
 
-function TimeField({ label, sec, onCommit }) {
-  const min = Math.floor(sec / 60);
-  const s = sec % 60;
+function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
-  function commit(nextMin, nextS) {
-    let total = clamp(nextMin, 0, 59) * 60 + clamp(nextS, 0, 59);
-    if (total === 0) total = 1;
-    onCommit(total);
+// ---- iOS-style scrolling wheel picker (like the alarm clock time picker) ----
+const WHEEL_ITEM_HEIGHT = 40;
+const WHEEL_VISIBLE_COUNT = 5;
+
+function WheelColumn({ values, value, onChange, formatItem }) {
+  const containerRef = useRef(null);
+  const settleTimer = useRef(null);
+  const readyRef = useRef(false);
+  const padding = (WHEEL_ITEM_HEIGHT * (WHEEL_VISIBLE_COUNT - 1)) / 2;
+
+  // Positioning is entirely JS-driven (no CSS scroll-snap) so there is only
+  // one system ever setting scrollTop — CSS scroll-snap fighting a JS-set
+  // position (especially while an ancestor is mid CSS-animation) is what
+  // caused this to silently reset back to 0 before.
+  useLayoutEffect(() => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = values.indexOf(value) * WHEEL_ITEM_HEIGHT;
+    }
+    readyRef.current = true;
+    // eslint-disable-next-line
+  }, []);
+
+  function handleScroll() {
+    if (!readyRef.current) return;
+    clearTimeout(settleTimer.current);
+    settleTimer.current = setTimeout(() => {
+      const el = containerRef.current;
+      if (!el) return;
+      const idx = clamp(Math.round(el.scrollTop / WHEEL_ITEM_HEIGHT), 0, values.length - 1);
+      el.scrollTo({ top: idx * WHEEL_ITEM_HEIGHT, behavior: 'smooth' });
+      if (values[idx] !== value) onChange(values[idx]);
+    }, 120);
   }
 
   return (
-    <div className="flex flex-col gap-1.5 items-center">
-      <label className="text-[11px] text-iossecondary font-medium">{label}</label>
-      <div className="flex items-center gap-1" dir="ltr">
-        <input type="number" value={min} min="0" max="59"
-          onChange={e => commit(Number(e.target.value) || 0, s)}
-          className="w-11 text-center bg-iosbg rounded-lg py-1.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
-        <span className="text-iossecondary font-bold">:</span>
-        <input type="number" value={String(s).padStart(2, '0')} min="0" max="59"
-          onChange={e => commit(min, Number(e.target.value) || 0)}
-          className="w-11 text-center bg-iosbg rounded-lg py-1.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+    <div ref={containerRef} onScroll={handleScroll}
+      className="overflow-y-scroll no-scrollbar w-24"
+      style={{ height: WHEEL_ITEM_HEIGHT * WHEEL_VISIBLE_COUNT, paddingTop: padding, paddingBottom: padding }}>
+      {values.map(v => (
+        <div key={v} className="flex items-center justify-center text-[22px] font-semibold tabular-nums transition-colors"
+          style={{ height: WHEEL_ITEM_HEIGHT, color: v === value ? '#1C1C1E' : '#C7C7CC' }}>
+          {formatItem(v)}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function TimePickerSheet({ title, sec, onCancel, onDone }) {
+  const [min, setMin] = useState(Math.floor(sec / 60));
+  const [s, setS] = useState(sec % 60);
+  const minutes = Array.from({ length: 60 }, (_, i) => i);
+  const seconds = Array.from({ length: 60 }, (_, i) => i);
+
+  function handleDone() {
+    let total = min * 60 + s;
+    if (total === 0) total = 1;
+    onDone(total);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" onClick={onCancel}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div onClick={e => e.stopPropagation()}
+        className="relative w-full max-w-md mx-auto bg-white rounded-t-3xl shadow-2xl animate-[slideUp_0.25s_ease]"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-iosseparator">
+          <button onClick={onCancel} className="text-iosblue text-[16px] px-1">Cancel</button>
+          <div className="font-semibold text-[16px]">{title}</div>
+          <button onClick={handleDone} className="text-iosblue font-semibold text-[16px] px-1">Done</button>
+        </div>
+        <div className="relative flex items-center justify-center py-3">
+          <div className="absolute inset-x-8 top-1/2 -translate-y-1/2 h-10 bg-iosbg rounded-xl pointer-events-none" />
+          <div className="flex items-center relative">
+            <WheelColumn values={minutes} value={min} onChange={setMin} formatItem={v => `${v} min`} />
+            <WheelColumn values={seconds} value={s} onChange={setS} formatItem={v => `${String(v).padStart(2, '0')} sec`} />
+          </div>
+        </div>
       </div>
     </div>
   );
 }
 
-function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
+function TimeRow({ label, sec, onCommit }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)}
+        className="flex flex-col gap-1.5 items-center bg-iosbg rounded-xl px-2 py-2.5 active:bg-iosseparator transition-colors">
+        <span className="text-[11px] text-iossecondary font-medium">{label}</span>
+        <span className="text-[15px] font-semibold tabular-nums">{fmtTime(sec)}</span>
+      </button>
+      {open && (
+        <TimePickerSheet title={label} sec={sec}
+          onCancel={() => setOpen(false)}
+          onDone={v => { onCommit(v); setOpen(false); }} />
+      )}
+    </>
+  );
+}
 
 // ===================== Timer Tab =====================
 
@@ -408,7 +473,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
 
   const CIRC = 2 * Math.PI * 90;
   const fraction = total > 0 ? remaining / total : 0;
-  const ringColor = phase === 'work' ? '#FF3B30' : phase === 'rest' ? '#007AFF' : phase === 'done' ? '#34C759' : '#FF3B30';
+  const ringColor = phase === 'work' ? '#33A34F' : phase === 'rest' ? '#007AFF' : phase === 'done' ? '#34C759' : '#33A34F';
   const phaseLabel = { idle: 'Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' }[phase];
 
   function nextUpLabel() {
@@ -471,20 +536,31 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         </div>
       </div>
 
-      <div className="flex items-center gap-3">
-        <button onClick={reset}
-          className="flex items-center gap-1.5 px-5 py-3.5 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
-          <ResetIcon className="w-4 h-4" /> Reset
-        </button>
-        <button onClick={running ? pause : start}
-          className="flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full bg-iosblue text-white font-semibold text-[16px] shadow-lg active:scale-95 transition">
-          {running ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-5 h-5" />}
-          {running ? 'Pause' : 'Start'}
-        </button>
-        <button onClick={skip}
-          className="flex items-center gap-1.5 px-5 py-3.5 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
-          <SkipIcon className="w-4 h-4" /> Skip
-        </button>
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-3">
+          <button onClick={start} disabled={running}
+            className={`flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full font-semibold text-[16px] active:scale-95 transition ${
+              !running ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
+            }`}>
+            <PlayIcon className="w-5 h-5" /> {phase === 'idle' || phase === 'done' ? 'Start' : 'Resume'}
+          </button>
+          <button onClick={pause} disabled={!running}
+            className={`flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full font-semibold text-[16px] active:scale-95 transition ${
+              running ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
+            }`}>
+            <PauseIcon className="w-5 h-5" /> Pause
+          </button>
+        </div>
+        <div className="flex items-center gap-3">
+          <button onClick={reset}
+            className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
+            <ResetIcon className="w-4 h-4" /> Reset
+          </button>
+          <button onClick={skip}
+            className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
+            <SkipIcon className="w-4 h-4" /> Skip
+          </button>
+        </div>
       </div>
     </div>
   );
@@ -503,39 +579,31 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
       </div>
 
       <div className="flex flex-col gap-3">
-        {categories.map(cat => {
-          const CatIcon = iconForCategory(cat.name);
-          return (
-            <Card key={cat.id} className={`p-4 ${cat.id === selectedCategoryId ? 'ring-2 ring-iosblue' : ''}`}>
-              <div className="flex items-center justify-between mb-3">
-                <input
-                  value={cat.name}
-                  onChange={e => onRenameCategory(cat.id, e.target.value)}
-                  onBlur={() => onEnsureNamed(cat.id)}
-                  className="text-[17px] font-semibold bg-transparent outline-none flex-1 min-w-0"
-                />
-                <div className="flex items-center gap-1 shrink-0">
-                  <div className="w-9 h-9 rounded-full bg-iosbg flex items-center justify-center text-ioslabel">
-                    <CatIcon className="w-4 h-4" />
-                  </div>
-                  <IconButton onClick={() => onDeleteCategory(cat.id)} className="text-iosred">
-                    <TrashIcon className="w-4 h-4" />
-                  </IconButton>
-                </div>
+        {categories.map(cat => (
+          <Card key={cat.id} className={`p-4 ${cat.id === selectedCategoryId ? 'ring-2 ring-iosblue' : ''}`}>
+            <div className="flex items-center justify-between mb-3">
+              <input
+                value={cat.name}
+                onChange={e => onRenameCategory(cat.id, e.target.value)}
+                onBlur={() => onEnsureNamed(cat.id)}
+                className="text-[17px] font-semibold bg-transparent outline-none flex-1 min-w-0"
+              />
+              <IconButton onClick={() => onDeleteCategory(cat.id)} className="text-iosred shrink-0">
+                <TrashIcon className="w-4 h-4" />
+              </IconButton>
+            </div>
+            <div className="grid grid-cols-3 gap-2">
+              <TimeRow label="Work Time" sec={cat.workSec} onCommit={v => onUpdateCategory(cat.id, { workSec: v })} />
+              <TimeRow label="Rest Time" sec={cat.restSec} onCommit={v => onUpdateCategory(cat.id, { restSec: v })} />
+              <div className="flex flex-col gap-1.5 items-center bg-iosbg rounded-xl px-2 py-2.5">
+                <label className="text-[11px] text-iossecondary font-medium">Rounds</label>
+                <input type="number" min="1" max="99" value={cat.rounds}
+                  onChange={e => onUpdateCategory(cat.id, { rounds: clamp(Number(e.target.value) || 1, 1, 99) })}
+                  className="w-12 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
               </div>
-              <div className="grid grid-cols-3 gap-2">
-                <TimeField label="Work Time" sec={cat.workSec} onCommit={v => onUpdateCategory(cat.id, { workSec: v })} />
-                <TimeField label="Rest Time" sec={cat.restSec} onCommit={v => onUpdateCategory(cat.id, { restSec: v })} />
-                <div className="flex flex-col gap-1.5 items-center">
-                  <label className="text-[11px] text-iossecondary font-medium">Rounds</label>
-                  <input type="number" min="1" max="99" value={cat.rounds}
-                    onChange={e => onUpdateCategory(cat.id, { rounds: clamp(Number(e.target.value) || 1, 1, 99) })}
-                    className="w-14 text-center bg-iosbg rounded-lg py-1.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
-                </div>
-              </div>
-            </Card>
-          );
-        })}
+            </div>
+          </Card>
+        ))}
       </div>
     </div>
   );
