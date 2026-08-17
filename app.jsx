@@ -411,6 +411,17 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const ringColor = phase === 'work' ? '#FF3B30' : phase === 'rest' ? '#007AFF' : phase === 'done' ? '#34C759' : '#FF3B30';
   const phaseLabel = { idle: 'Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' }[phase];
 
+  function nextUpLabel() {
+    const isLastRound = round >= category.rounds;
+    if (phase === 'work') {
+      if (category.restSec > 0) return `Next · Rest ${fmtTime(category.restSec)}`;
+      return isLastRound ? 'Last interval' : `Next · Work ${fmtTime(category.workSec)}`;
+    }
+    if (phase === 'rest') return isLastRound ? 'Almost there' : `Next · Work ${fmtTime(category.workSec)}`;
+    if (phase === 'idle') return `Starts with Work ${fmtTime(category.workSec)}`;
+    return '';
+  }
+
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between">
@@ -420,59 +431,60 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         </IconButton>
       </div>
 
-      <Card className="p-3">
-        <label className="text-[13px] text-iossecondary block mb-1">Category</label>
+      <div className="flex justify-center">
         <select value={category.id} onChange={e => onSelectCategory(e.target.value)}
-          className="w-full bg-iosbg rounded-lg px-3 py-2 text-[15px] font-medium outline-none">
+          className="bg-iosseparator/70 rounded-full pl-4 pr-4 py-2 text-[14px] font-semibold outline-none text-center">
           {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
-      </Card>
+      </div>
 
-      <Card className="p-4">
-        <div className="grid grid-cols-3 divide-x divide-iosseparator text-center">
-          <div className="px-2">
-            <div className="text-[11px] text-iossecondary font-medium mb-1">Work Time</div>
-            <div className="text-[17px] font-semibold">{fmtTime(category.workSec)}</div>
-          </div>
-          <div className="px-2">
-            <div className="text-[11px] text-iossecondary font-medium mb-1">Rest Time</div>
-            <div className="text-[17px] font-semibold">{fmtTime(category.restSec)}</div>
-          </div>
-          <div className="px-2">
-            <div className="text-[11px] text-iossecondary font-medium mb-1">Rounds</div>
-            <div className="text-[17px] font-semibold">{category.rounds}</div>
-          </div>
+      <div className="flex items-center justify-center gap-2 flex-wrap">
+        <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
+          <span className="text-[11px] text-iossecondary font-medium">Work</span>
+          <span className="text-[13px] font-semibold tabular-nums">{fmtTime(category.workSec)}</span>
         </div>
-      </Card>
-      <div className="text-center text-[12px] text-iossecondary -mt-3">Edit times in the Categories tab</div>
+        <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
+          <span className="text-[11px] text-iossecondary font-medium">Rest</span>
+          <span className="text-[13px] font-semibold tabular-nums">{fmtTime(category.restSec)}</span>
+        </div>
+        <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
+          <span className="text-[11px] text-iossecondary font-medium">Rounds</span>
+          <span className="text-[13px] font-semibold tabular-nums">{category.rounds}</span>
+        </div>
+      </div>
+      <div className="text-center text-[11px] text-iossecondary -mt-4">Edit times in the Categories tab</div>
 
       <div className="flex flex-col items-center justify-center py-2 relative">
         <div className="relative w-[260px] h-[260px]">
           <svg viewBox="0 0 200 200" className="w-full h-full -rotate-90">
-            <circle cx="100" cy="100" r="90" fill="none" stroke="#F2F2F7" strokeWidth="12" />
-            <circle cx="100" cy="100" r="90" fill="none" stroke={ringColor} strokeWidth="12"
+            <circle cx="100" cy="100" r="90" fill="none" stroke="#F2F2F7" strokeWidth="16" />
+            <circle cx="100" cy="100" r="90" fill="none" stroke={ringColor} strokeWidth="16"
               strokeLinecap="round" strokeDasharray={CIRC}
               strokeDashoffset={CIRC * (1 - fraction)} className="progress-ring-fg" />
           </svg>
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
             <div className="text-[13px] font-semibold uppercase tracking-wide text-iossecondary">{phaseLabel}</div>
-            <div className="text-[56px] font-bold tabular-nums leading-none">{fmtTime(remaining)}</div>
+            <div className="text-[56px] font-bold font-mono tabular-nums leading-none">{fmtTime(remaining)}</div>
             <div className="text-[13px] text-iossecondary mt-1">Round {round} of {category.rounds}</div>
+            <div className="text-[12px] text-iossecondary mt-2">{nextUpLabel()}</div>
           </div>
         </div>
       </div>
 
-      <div className="flex items-center justify-center gap-6">
-        <IconButton onClick={reset} className="bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] w-12 h-12">
-          <ResetIcon className="w-5 h-5" />
-        </IconButton>
-        <button onClick={running ? pause : start}
-          className="w-20 h-20 rounded-full bg-ioslabel text-white flex items-center justify-center shadow-lg active:scale-95 transition">
-          {running ? <PauseIcon className="w-8 h-8" /> : <PlayIcon className="w-8 h-8 ml-1" />}
+      <div className="flex items-center gap-3">
+        <button onClick={reset}
+          className="flex items-center gap-1.5 px-5 py-3.5 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
+          <ResetIcon className="w-4 h-4" /> Reset
         </button>
-        <IconButton onClick={skip} className="bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] w-12 h-12">
-          <SkipIcon className="w-5 h-5" />
-        </IconButton>
+        <button onClick={running ? pause : start}
+          className="flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full bg-iosblue text-white font-semibold text-[16px] shadow-lg active:scale-95 transition">
+          {running ? <PauseIcon className="w-5 h-5" /> : <PlayIcon className="w-5 h-5" />}
+          {running ? 'Pause' : 'Start'}
+        </button>
+        <button onClick={skip}
+          className="flex items-center gap-1.5 px-5 py-3.5 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
+          <SkipIcon className="w-4 h-4" /> Skip
+        </button>
       </div>
     </div>
   );
