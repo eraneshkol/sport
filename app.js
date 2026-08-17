@@ -11,7 +11,45 @@ function loadState() {
   return null;
 }
 
+function uid(prefix) {
+  return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+}
+
+function ex(name, description) {
+  return { id: uid('ex'), name, description };
+}
+
+function defaultWorkouts() {
+  return [
+    {
+      id: 'wk-a',
+      name: 'אימון A',
+      exercises: [
+        ex('Dumbbell RDL', 'כיפוף מפרק הירך בלבד, דחיפת הישבן אחורה והורדת משקולות צמוד לשוקיים.'),
+        ex('Dumbbell Bench Press', 'שכיבה על ספסל שטוח ודחיפת משקולות ישר למעלה.'),
+        ex('Lat Pulldown', 'ישיבה במכונה ומשיכת מוט רחב מלמעלה למטה אל קו החזה.'),
+        ex('Seated DB Shoulder Press', 'ישיבה על ספסל זקוף ודחיפת משקולות מגובה הכתפיים מעל הראש.'),
+        ex('Dumbbell Bicep Curls', 'עמידה והרמת משקולות אל הכתפיים על ידי כיפוף המרפקים.'),
+        ex('Plank Mountain Climbers', 'מצב פלאנק על האמות והבאת ברכיים חלופיות לכיוון החזה.'),
+      ],
+    },
+    {
+      id: 'wk-b',
+      name: 'אימון B',
+      exercises: [
+        ex('Goblet Squat', 'ירידה לסקוואט כששתי הידיים מחזיקות משקולת אחת צמודה לחזה.'),
+        ex('Incline Dumbbell Press', 'לחיצת משקולות למעלה כשהספסל בשיפוע אלכסוני (חצי ישיבה).'),
+        ex('One-Arm Dumbbell Row', 'ברך ויד אחת נשענות על ספסל, והיד השנייה מושכת משקולת אל האגן.'),
+        ex('Dumbbell Reverse Lunges', 'עמידה עם משקולות בידיים ולקיחת צעד גדול אחורה תוך ירידה לברך.'),
+        ex('Tricep Pushdown', 'עמידה מול הפולי עליון ודחיפת החבל למטה עד יישור הזרועות.'),
+        ex('Side Plank Dips', 'פלאנק על הצד והרמה/הורדה של האגן באוויר.'),
+      ],
+    },
+  ];
+}
+
 function defaultState() {
+  const workouts = defaultWorkouts();
   return {
     selectedCategoryId: 'cat-weights',
     categories: [
@@ -19,6 +57,9 @@ function defaultState() {
       { id: 'cat-abs',     name: 'בטן',            workSec: 40, restSec: 20, rounds: 4 },
       { id: 'cat-walk',    name: 'הליכה',          workSec: 300, restSec: 60, rounds: 2 },
     ],
+    workouts: workouts,
+    workoutProgress: {},
+    activeWorkoutId: workouts[0].id,
   };
 }
 
@@ -29,6 +70,16 @@ if (!state.categories || state.categories.length === 0) {
 if (!state.categories.find(c => c.id === state.selectedCategoryId)) {
   state.selectedCategoryId = state.categories[0].id;
 }
+// Migrate older saved states that predate the workout feature.
+if (!state.workouts || state.workouts.length === 0) {
+  state.workouts = defaultWorkouts();
+}
+if (!state.workoutProgress) {
+  state.workoutProgress = {};
+}
+if (!state.activeWorkoutId || !state.workouts.find(w => w.id === state.activeWorkoutId)) {
+  state.activeWorkoutId = state.workouts[0].id;
+}
 
 function saveState() {
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -38,8 +89,8 @@ function getSelectedCategory() {
   return state.categories.find(c => c.id === state.selectedCategoryId);
 }
 
-function uid() {
-  return 'cat-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+function getActiveWorkout() {
+  return state.workouts.find(w => w.id === state.activeWorkoutId);
 }
 
 // ===== Tabs =====
@@ -52,6 +103,11 @@ tabs.forEach(tab => {
     tab.classList.add('active');
     document.getElementById('tab-' + tab.dataset.tab).classList.add('active');
     if (tab.dataset.tab === 'categories') renderCategoryList();
+    if (tab.dataset.tab === 'workout') {
+      showWorkoutRunView();
+      renderActiveWorkoutPicker();
+      renderRunView();
+    }
   });
 });
 
@@ -203,7 +259,7 @@ function renderCategoryList() {
 }
 
 addCategoryBtn.addEventListener('click', () => {
-  const newCat = { id: uid(), name: 'קטגוריה חדשה', workSec: 60, restSec: 30, rounds: 3 };
+  const newCat = { id: uid('cat'), name: 'קטגוריה חדשה', workSec: 60, restSec: 30, rounds: 3 };
   state.categories.push(newCat);
   state.selectedCategoryId = newCat.id;
   saveState();
@@ -409,8 +465,346 @@ function playChime(type) {
   }
 }
 
+// ===== Workout tab =====
+const activeWorkoutPicker = document.getElementById('activeWorkoutPicker');
+const manageWorkoutsBtn = document.getElementById('manageWorkoutsBtn');
+const runProgress = document.getElementById('runProgress');
+const exerciseRunList = document.getElementById('exerciseRunList');
+const workoutEmptyState = document.getElementById('workoutEmptyState');
+const emptyStateAddBtn = document.getElementById('emptyStateAddBtn');
+const resetChecksBtn = document.getElementById('resetChecksBtn');
+
+const workoutRunViewEl = document.getElementById('workoutRunView');
+const workoutManageViewEl = document.getElementById('workoutManageView');
+const workoutEditViewEl = document.getElementById('workoutEditView');
+
+const backFromManageBtn = document.getElementById('backFromManageBtn');
+const addWorkoutBtn = document.getElementById('addWorkoutBtn');
+const workoutList = document.getElementById('workoutList');
+
+const backFromEditBtn = document.getElementById('backFromEditBtn');
+const workoutNameInput = document.getElementById('workoutNameInput');
+const importTextarea = document.getElementById('importTextarea');
+const importBtn = document.getElementById('importBtn');
+const exerciseEditList = document.getElementById('exerciseEditList');
+const addExerciseRowBtn = document.getElementById('addExerciseRowBtn');
+const saveWorkoutBtn = document.getElementById('saveWorkoutBtn');
+
+let editingWorkoutId = null;
+let draftExercises = [];
+
+function showWorkoutRunView() {
+  workoutRunViewEl.style.display = '';
+  workoutManageViewEl.style.display = 'none';
+  workoutEditViewEl.style.display = 'none';
+}
+
+function showWorkoutManageView() {
+  workoutRunViewEl.style.display = 'none';
+  workoutManageViewEl.style.display = '';
+  workoutEditViewEl.style.display = 'none';
+  renderWorkoutManageList();
+}
+
+function showWorkoutEditView() {
+  workoutRunViewEl.style.display = 'none';
+  workoutManageViewEl.style.display = 'none';
+  workoutEditViewEl.style.display = '';
+}
+
+// ---- Parse pasted exercise lists (e.g. copied from Gemini) ----
+// Top-level bullet lines (no leading whitespace) become exercise names.
+// Indented bullet lines are treated as the description of the exercise above them.
+function parseWorkoutText(text) {
+  const lines = text.split(/\r?\n/);
+  const exercises = [];
+  lines.forEach(raw => {
+    if (!raw.trim()) return;
+    const leadingSpaces = raw.match(/^(\s*)/)[1].length;
+    const content = raw.trim().replace(/^[-*•]\s*/, '');
+    if (!content) return;
+    if (leadingSpaces === 0) {
+      exercises.push(ex(content, ''));
+    } else if (exercises.length > 0) {
+      const m = content.match(/איך מזהים:\s*(.*)/);
+      const descText = (m ? m[1] : content).trim();
+      const last = exercises[exercises.length - 1];
+      last.description = last.description ? last.description + ' ' + descText : descText;
+    }
+  });
+  return exercises;
+}
+
+// ---- Run view: today's workout checklist ----
+function renderActiveWorkoutPicker() {
+  activeWorkoutPicker.innerHTML = '';
+  state.workouts.forEach(wk => {
+    const opt = document.createElement('option');
+    opt.value = wk.id;
+    opt.textContent = wk.name;
+    activeWorkoutPicker.appendChild(opt);
+  });
+  activeWorkoutPicker.value = state.activeWorkoutId || '';
+}
+
+activeWorkoutPicker.addEventListener('change', () => {
+  state.activeWorkoutId = activeWorkoutPicker.value;
+  saveState();
+  renderRunView();
+});
+
+manageWorkoutsBtn.addEventListener('click', () => {
+  showWorkoutManageView();
+});
+
+function renderRunView() {
+  const hasWorkouts = state.workouts.length > 0;
+  activeWorkoutPicker.style.display = hasWorkouts ? '' : 'none';
+  workoutEmptyState.style.display = hasWorkouts ? 'none' : 'flex';
+  resetChecksBtn.style.display = hasWorkouts ? '' : 'none';
+  exerciseRunList.innerHTML = '';
+  runProgress.textContent = '';
+
+  if (!hasWorkouts) return;
+
+  const wk = getActiveWorkout();
+  if (!wk) return;
+
+  const progress = state.workoutProgress[wk.id] || (state.workoutProgress[wk.id] = {});
+  const doneCount = wk.exercises.filter(e => progress[e.id]).length;
+  const total = wk.exercises.length;
+  runProgress.textContent = `${doneCount} מתוך ${total} הושלמו`;
+
+  const firstUndoneIndex = wk.exercises.findIndex(e => !progress[e.id]);
+
+  wk.exercises.forEach((exercise, index) => {
+    const li = document.createElement('li');
+    const isDone = !!progress[exercise.id];
+    const isCurrent = !isDone && index === firstUndoneIndex;
+    li.className = 'exercise-run-item' + (isDone ? ' done' : '') + (isCurrent ? ' current' : '');
+
+    const checkbox = document.createElement('input');
+    checkbox.type = 'checkbox';
+    checkbox.checked = isDone;
+    checkbox.addEventListener('change', () => {
+      progress[exercise.id] = checkbox.checked;
+      saveState();
+      renderRunView();
+    });
+
+    const textWrap = document.createElement('div');
+    textWrap.className = 'exercise-run-text';
+
+    if (isCurrent) {
+      const badge = document.createElement('div');
+      badge.className = 'exercise-run-badge';
+      badge.textContent = '▶ עכשיו';
+      textWrap.appendChild(badge);
+    }
+
+    const nameEl = document.createElement('div');
+    nameEl.className = 'exercise-run-name';
+    nameEl.textContent = exercise.name;
+    textWrap.appendChild(nameEl);
+
+    if (exercise.description) {
+      const descEl = document.createElement('div');
+      descEl.className = 'exercise-run-desc';
+      descEl.textContent = exercise.description;
+      textWrap.appendChild(descEl);
+    }
+
+    li.appendChild(checkbox);
+    li.appendChild(textWrap);
+    exerciseRunList.appendChild(li);
+  });
+
+  if (doneCount === total) {
+    const banner = document.createElement('li');
+    banner.className = 'workout-complete-banner';
+    banner.textContent = 'כל הכבוד! סיימת את האימון 🎉';
+    exerciseRunList.appendChild(banner);
+  }
+}
+
+resetChecksBtn.addEventListener('click', () => {
+  const wk = getActiveWorkout();
+  if (!wk) return;
+  if (!confirm(`לאפס את כל הסימונים של "${wk.name}"?`)) return;
+  state.workoutProgress[wk.id] = {};
+  saveState();
+  renderRunView();
+});
+
+emptyStateAddBtn.addEventListener('click', () => {
+  openWorkoutEdit(null);
+});
+
+// ---- Manage view: list of workout templates ----
+function renderWorkoutManageList() {
+  workoutList.innerHTML = '';
+  state.workouts.forEach(wk => {
+    const li = document.createElement('li');
+    li.className = 'workout-item';
+
+    const top = document.createElement('div');
+    top.className = 'workout-item-top';
+
+    const name = document.createElement('div');
+    name.className = 'workout-item-name';
+    name.textContent = wk.name;
+
+    const editBtn = document.createElement('button');
+    editBtn.className = 'icon-btn';
+    editBtn.title = 'ערוך';
+    editBtn.textContent = '✎';
+    editBtn.addEventListener('click', () => openWorkoutEdit(wk.id));
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'icon-btn danger';
+    delBtn.title = 'מחק אימון';
+    delBtn.textContent = '🗑';
+    delBtn.addEventListener('click', () => {
+      if (!confirm(`למחוק את "${wk.name}"?`)) return;
+      state.workouts = state.workouts.filter(w => w.id !== wk.id);
+      delete state.workoutProgress[wk.id];
+      if (state.activeWorkoutId === wk.id) {
+        state.activeWorkoutId = state.workouts.length ? state.workouts[0].id : null;
+      }
+      saveState();
+      renderWorkoutManageList();
+      renderActiveWorkoutPicker();
+      renderRunView();
+    });
+
+    top.appendChild(name);
+    top.appendChild(editBtn);
+    top.appendChild(delBtn);
+
+    const summary = document.createElement('div');
+    summary.className = 'workout-item-summary';
+    summary.textContent = `${wk.exercises.length} תרגילים`;
+
+    li.appendChild(top);
+    li.appendChild(summary);
+    workoutList.appendChild(li);
+  });
+}
+
+backFromManageBtn.addEventListener('click', () => {
+  showWorkoutRunView();
+  renderRunView();
+});
+
+addWorkoutBtn.addEventListener('click', () => {
+  openWorkoutEdit(null);
+});
+
+// ---- Edit view: create / edit a workout template ----
+function openWorkoutEdit(workoutId) {
+  editingWorkoutId = workoutId;
+  if (workoutId) {
+    const wk = state.workouts.find(w => w.id === workoutId);
+    workoutNameInput.value = wk.name;
+    draftExercises = wk.exercises.map(e => ({ ...e }));
+  } else {
+    workoutNameInput.value = '';
+    draftExercises = [];
+  }
+  importTextarea.value = '';
+  renderExerciseEditList();
+  showWorkoutEditView();
+}
+
+function renderExerciseEditList() {
+  exerciseEditList.innerHTML = '';
+  draftExercises.forEach((exercise, index) => {
+    const li = document.createElement('li');
+    li.className = 'exercise-edit-item';
+
+    const row1 = document.createElement('div');
+    row1.className = 'exercise-edit-item-row';
+
+    const nameInput = document.createElement('input');
+    nameInput.className = 'exercise-name-field';
+    nameInput.placeholder = 'שם התרגיל';
+    nameInput.value = exercise.name;
+    nameInput.addEventListener('input', () => { exercise.name = nameInput.value; });
+
+    const delBtn = document.createElement('button');
+    delBtn.className = 'icon-btn danger';
+    delBtn.textContent = '🗑';
+    delBtn.addEventListener('click', () => {
+      draftExercises.splice(index, 1);
+      renderExerciseEditList();
+    });
+
+    row1.appendChild(nameInput);
+    row1.appendChild(delBtn);
+
+    const descInput = document.createElement('input');
+    descInput.placeholder = 'איך מזהים (תיאור, אופציונלי)';
+    descInput.value = exercise.description || '';
+    descInput.addEventListener('input', () => { exercise.description = descInput.value; });
+
+    li.appendChild(row1);
+    li.appendChild(descInput);
+    exerciseEditList.appendChild(li);
+  });
+}
+
+importBtn.addEventListener('click', () => {
+  const parsed = parseWorkoutText(importTextarea.value);
+  if (parsed.length === 0) {
+    alert('לא הצלחתי לזהות תרגילים בטקסט שהודבק');
+    return;
+  }
+  draftExercises = draftExercises.concat(parsed);
+  importTextarea.value = '';
+  renderExerciseEditList();
+});
+
+addExerciseRowBtn.addEventListener('click', () => {
+  draftExercises.push(ex('', ''));
+  renderExerciseEditList();
+});
+
+backFromEditBtn.addEventListener('click', () => {
+  showWorkoutManageView();
+});
+
+saveWorkoutBtn.addEventListener('click', () => {
+  const name = workoutNameInput.value.trim();
+  if (!name) {
+    alert('צריך לתת שם לאימון');
+    return;
+  }
+  const cleanExercises = draftExercises
+    .filter(e => e.name && e.name.trim())
+    .map(e => ({ id: e.id || uid('ex'), name: e.name.trim(), description: (e.description || '').trim() }));
+  if (cleanExercises.length === 0) {
+    alert('צריך לפחות תרגיל אחד');
+    return;
+  }
+
+  if (editingWorkoutId) {
+    const wk = state.workouts.find(w => w.id === editingWorkoutId);
+    wk.name = name;
+    wk.exercises = cleanExercises;
+  } else {
+    const newWorkout = { id: uid('wk'), name, exercises: cleanExercises };
+    state.workouts.push(newWorkout);
+    state.activeWorkoutId = newWorkout.id;
+  }
+  saveState();
+  renderActiveWorkoutPicker();
+  showWorkoutManageView();
+});
+
 // ===== Init =====
 renderCategoryPicker();
 loadConfigInputsFromCategory();
 resetTimerToConfig();
 renderCategoryList();
+renderActiveWorkoutPicker();
+renderRunView();
