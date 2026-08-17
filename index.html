@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>אימוני כושר</title>
+<link rel="manifest" href="manifest.json">
+<meta name="theme-color" content="#0f172a">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div class="app">
+
+  <nav class="tabbar">
+    <button class="tab active" data-tab="timer">⏱ טיימר</button>
+    <button class="tab" data-tab="categories">📋 קטגוריות</button>
+  </nav>
+
+  <!-- ===== TIMER TAB ===== -->
+  <section id="tab-timer" class="tab-panel active">
+
+    <div class="category-select-row">
+      <label for="categoryPicker">קטגוריה</label>
+      <select id="categoryPicker"></select>
+    </div>
+
+    <div class="config-grid">
+      <div class="config-field">
+        <label>זמן עבודה</label>
+        <div class="time-input">
+          <input type="number" id="workMin" min="0" max="59" value="1">
+          <span>:</span>
+          <input type="number" id="workSec" min="0" max="59" value="20">
+        </div>
+      </div>
+      <div class="config-field">
+        <label>זמן מנוחה</label>
+        <div class="time-input">
+          <input type="number" id="restMin" min="0" max="59" value="0">
+          <span>:</span>
+          <input type="number" id="restSec" min="0" max="59" value="30">
+        </div>
+      </div>
+      <div class="config-field">
+        <label>סיבובים</label>
+        <input type="number" id="roundsInput" min="1" max="99" value="3" class="rounds-input">
+      </div>
+    </div>
+
+    <div class="timer-display-wrap">
+      <div class="phase-label" id="phaseLabel">מוכן</div>
+      <div class="timer-display" id="timerDisplay">01:20</div>
+      <div class="round-counter" id="roundCounter">סיבוב 1 מתוך 3</div>
+      <div class="progress-ring-wrap">
+        <svg viewBox="0 0 200 200" class="progress-ring">
+          <circle class="progress-ring-bg" cx="100" cy="100" r="90"></circle>
+          <circle class="progress-ring-fg" id="progressRing" cx="100" cy="100" r="90"></circle>
+        </svg>
+      </div>
+    </div>
+
+    <div class="timer-controls">
+      <button id="resetBtn" class="btn btn-secondary">איפוס</button>
+      <button id="startPauseBtn" class="btn btn-primary">התחל</button>
+      <button id="skipBtn" class="btn btn-secondary">דלג</button>
+    </div>
+  </section>
+
+  <!-- ===== CATEGORIES TAB ===== -->
+  <section id="tab-categories" class="tab-panel">
+    <div class="categories-header">
+      <h2>קטגוריות אימון</h2>
+      <button id="addCategoryBtn" class="btn btn-primary btn-small">+ קטגוריה חדשה</button>
+    </div>
+    <ul class="category-list" id="categoryList"></ul>
+  </section>
+
+</div>
+
+<audio id="beepAudio" preload="auto"></audio>
+<script src="app.js"></script>
+</body>
+</html>
