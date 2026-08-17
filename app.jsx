@@ -210,6 +210,19 @@ function CompletionOverlay({ celebration }) {
   );
 }
 
+function CountdownOverlay({ value }) {
+  if (!value) return null;
+  return (
+    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 backdrop-blur-[2px]">
+      <div key={value}
+        className="text-white font-bold leading-none tabular-nums animate-[countdownPulse_1s_cubic-bezier(0.22,1,0.36,1)]"
+        style={{ fontSize: '180px', textShadow: '0 0 40px rgba(0,0,0,0.5)' }}>
+        {value}
+      </div>
+    </div>
+  );
+}
+
 function Card({ children, className = '' }) {
   return (
     <div className={`bg-ioscard rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.04)] ${className}`}>
@@ -341,17 +354,22 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const runningRef = useRef(false);
   const intervalRef = useRef(null);
   const audioCtxRef = useRef(null);
+  const countdownRef = useRef(0); // 0 = not counting down, else 3/2/1
+  const countdownTimerRef = useRef(null);
   const [, forceRender] = useReducer(x => x + 1, 0);
 
   useEffect(() => {
     clearInterval(intervalRef.current);
+    clearInterval(countdownTimerRef.current);
+    countdownTimerRef.current = null;
+    countdownRef.current = 0;
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
     phaseTotalRef.current = category.workSec;
     remainingRef.current = category.workSec;
     forceRender();
-    return () => clearInterval(intervalRef.current);
+    return () => { clearInterval(intervalRef.current); clearInterval(countdownTimerRef.current); };
   }, [category.id, category.workSec, category.restSec, category.rounds]);
 
   function ensureAudio() {
@@ -363,10 +381,10 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     return audioCtxRef.current;
   }
 
-  function playTone(ctx, freq, startTime, duration, volume = 0.25) {
+  function playTone(ctx, freq, startTime, duration, volume = 0.25, type = 'sine') {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'sine';
+    osc.type = type;
     osc.frequency.value = freq;
     gain.gain.setValueAtTime(0, startTime);
     gain.gain.linearRampToValueAtTime(volume, startTime + 0.02);
@@ -377,13 +395,39 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     osc.stop(startTime + duration + 0.05);
   }
 
+  // Distinct, loud-but-not-harsh countdown beep: a low thump for weight
+  // (so it cuts through music/headphones) layered with a bright triangle
+  // ping for clarity, deliberately different from the work/rest chimes.
+  function playCountdownBeep() {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    playTone(ctx, 220, t0, 0.16, 0.55, 'sine');
+    playTone(ctx, 1108, t0, 0.14, 0.4, 'triangle');
+  }
+
   function playChime(type) {
     const ctx = ensureAudio();
     if (!ctx) return;
     const t0 = ctx.currentTime;
-    if (type === 'rest') { playTone(ctx, 880, t0, 0.18); playTone(ctx, 587, t0 + 0.16, 0.22); }
-    else if (type === 'work') { playTone(ctx, 587, t0, 0.18); playTone(ctx, 880, t0 + 0.16, 0.22); }
-    else if (type === 'finish') { playTone(ctx, 659, t0, 0.18); playTone(ctx, 784, t0 + 0.16, 0.18); playTone(ctx, 988, t0 + 0.32, 0.4, 0.3); }
+    // Every chime carries a low sine "thump" under the melody so it cuts
+    // through music/podcasts playing in headphones, plus triangle-wave
+    // tones (more present than plain sine) for the melodic part.
+    if (type === 'rest') {
+      playTone(ctx, 200, t0, 0.2, 0.4, 'sine');
+      playTone(ctx, 880, t0, 0.2, 0.45, 'triangle');
+      playTone(ctx, 587, t0 + 0.16, 0.24, 0.4, 'triangle');
+    } else if (type === 'work') {
+      playTone(ctx, 200, t0, 0.2, 0.4, 'sine');
+      playTone(ctx, 587, t0, 0.2, 0.45, 'triangle');
+      playTone(ctx, 880, t0 + 0.16, 0.24, 0.4, 'triangle');
+    } else if (type === 'finish') {
+      playTone(ctx, 260, t0, 0.22, 0.5, 'sine');
+      playTone(ctx, 659, t0, 0.2, 0.45, 'triangle');
+      playTone(ctx, 784, t0 + 0.16, 0.2, 0.45, 'triangle');
+      playTone(ctx, 260, t0 + 0.32, 0.45, 0.4, 'sine');
+      playTone(ctx, 988, t0 + 0.32, 0.45, 0.5, 'triangle');
+    }
   }
 
   function finishRoundOrDone() {
@@ -426,12 +470,47 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     forceRender();
   }
 
+  function beginWork() {
+    phaseRef.current = 'work';
+    roundRef.current = 1;
+    phaseTotalRef.current = category.workSec;
+    remainingRef.current = category.workSec;
+    runningRef.current = true;
+    phaseEndAtRef.current = Date.now() + category.workSec * 1000;
+    clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(tick, 200);
+    forceRender();
+  }
+
+  // Old-movie-style 3-2-1 countdown, shown once before the very first work
+  // interval of a run (not on resume-from-pause, not between rounds), so
+  // there's a moment to get set before the clock actually starts.
+  function runCountdown(onDone) {
+    ensureAudio();
+    countdownRef.current = 3;
+    forceRender();
+    let n = 3;
+    countdownTimerRef.current = setInterval(() => {
+      n -= 1;
+      playCountdownBeep();
+      if (n > 0) {
+        countdownRef.current = n;
+        forceRender();
+      } else {
+        clearInterval(countdownTimerRef.current);
+        countdownTimerRef.current = null;
+        countdownRef.current = 0;
+        forceRender();
+        onDone();
+      }
+    }, 1000);
+  }
+
   function start() {
+    if (countdownRef.current > 0) return;
     if (phaseRef.current === 'idle' || phaseRef.current === 'done') {
-      phaseRef.current = 'work';
-      roundRef.current = 1;
-      phaseTotalRef.current = category.workSec;
-      remainingRef.current = category.workSec;
+      runCountdown(beginWork);
+      return;
     }
     runningRef.current = true;
     phaseEndAtRef.current = Date.now() + remainingRef.current * 1000;
@@ -449,6 +528,9 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
 
   function reset() {
     clearInterval(intervalRef.current);
+    clearInterval(countdownTimerRef.current);
+    countdownTimerRef.current = null;
+    countdownRef.current = 0;
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
@@ -458,6 +540,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   }
 
   function skip() {
+    if (countdownRef.current > 0) return;
     if (phaseRef.current === 'idle' || phaseRef.current === 'done') return;
     clearInterval(intervalRef.current);
     advancePhase();
@@ -470,6 +553,8 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const remaining = remainingRef.current;
   const total = phaseTotalRef.current;
   const running = runningRef.current;
+  const countdown = countdownRef.current;
+  const counting = countdown > 0;
 
   const CIRC = 2 * Math.PI * 90;
   const fraction = total > 0 ? remaining / total : 0;
@@ -538,11 +623,12 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
-          <button onClick={start} disabled={running}
+          <button onClick={start} disabled={running || counting}
             className={`flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full font-semibold text-[16px] active:scale-95 transition ${
-              !running ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
+              !running && !counting ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
             }`}>
-            <PlayIcon className="w-5 h-5" /> {phase === 'idle' || phase === 'done' ? 'Start' : 'Resume'}
+            <PlayIcon className="w-5 h-5" />
+            {counting ? 'Get ready…' : (phase === 'idle' || phase === 'done' ? 'Start' : 'Resume')}
           </button>
           <button onClick={pause} disabled={!running}
             className={`flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full font-semibold text-[16px] active:scale-95 transition ${
@@ -556,12 +642,14 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
             className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
             <ResetIcon className="w-4 h-4" /> Reset
           </button>
-          <button onClick={skip}
-            className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
+          <button onClick={skip} disabled={counting}
+            className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition disabled:opacity-50">
             <SkipIcon className="w-4 h-4" /> Skip
           </button>
         </div>
       </div>
+
+      <CountdownOverlay value={countdown} />
     </div>
   );
 }
