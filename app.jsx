@@ -12,30 +12,52 @@ function ex(name, description) {
   return { id: uid('ex'), name, description };
 }
 
+// Maps each exercise name to its old Hebrew cue and new English cue, so we
+// can both seed fresh installs in English and migrate already-saved Hebrew
+// descriptions (from earlier versions of this app) without touching any
+// custom text a user typed in themselves.
+const EXERCISE_DESCRIPTIONS = {
+  'Dumbbell RDL': ['כיפוף מפרק הירך בלבד, דחיפת הישבן אחורה והורדת משקולות צמוד לשוקיים.', 'Hinge at the hips only, push your hips back, and lower the dumbbells close to your shins.'],
+  'Dumbbell Bench Press': ['שכיבה על ספסל שטוח ודחיפת משקולות ישר למעלה.', 'Lie on a flat bench and press the dumbbells straight up.'],
+  'Lat Pulldown': ['ישיבה במכונה ומשיכת מוט רחב מלמעלה למטה אל קו החזה.', 'Sit at the machine and pull a wide bar down from overhead to chest level.'],
+  'Seated DB Shoulder Press': ['ישיבה על ספסל זקוף ודחיפת משקולות מגובה הכתפיים מעל הראש.', 'Sit upright on a bench and press the dumbbells overhead from shoulder height.'],
+  'Dumbbell Bicep Curls': ['עמידה והרמת משקולות אל הכתפיים על ידי כיפוף המרפקים.', 'Stand and curl the dumbbells toward your shoulders by bending your elbows.'],
+  'Plank Mountain Climbers': ['מצב פלאנק על האמות והבאת ברכיים חלופיות לכיוון החזה.', 'Hold a forearm plank and drive alternating knees toward your chest.'],
+  'Goblet Squat': ['ירידה לסקוואט כששתי הידיים מחזיקות משקולת אחת צמודה לחזה.', 'Squat down while holding a single dumbbell with both hands close to your chest.'],
+  'Incline Dumbbell Press': ['לחיצת משקולות למעלה כשהספסל בשיפוע אלכסוני (חצי ישיבה).', 'Press the dumbbells upward on a bench set to an incline (half-seated position).'],
+  'One-Arm Dumbbell Row': ['ברך ויד אחת נשענות על ספסל, והיד השנייה מושכת משקולת אל האגן.', 'One knee and hand rest on a bench while the other hand pulls a dumbbell toward your hip.'],
+  'Dumbbell Reverse Lunges': ['עמידה עם משקולות בידיים ולקיחת צעד גדול אחורה תוך ירידה לברך.', 'Stand holding dumbbells and take a big step backward while lowering into a lunge.'],
+  'Tricep Pushdown': ['עמידה מול הפולי עליון ודחיפת החבל למטה עד יישור הזרועות.', 'Stand facing the high pulley and push the rope down until your arms are fully extended.'],
+  'Side Plank Dips': ['פלאנק על הצד והרמה/הורדה של האגן באוויר.', 'Hold a side plank and raise/lower your hips in the air.'],
+};
+const LEGACY_DESCRIPTION_TO_ENGLISH = Object.fromEntries(
+  Object.values(EXERCISE_DESCRIPTIONS).map(([legacy, english]) => [legacy, english])
+);
+
 function defaultWorkouts() {
   return [
     {
       id: 'wk-a',
       name: 'Workout A',
       exercises: [
-        ex('Dumbbell RDL', 'כיפוף מפרק הירך בלבד, דחיפת הישבן אחורה והורדת משקולות צמוד לשוקיים.'),
-        ex('Dumbbell Bench Press', 'שכיבה על ספסל שטוח ודחיפת משקולות ישר למעלה.'),
-        ex('Lat Pulldown', 'ישיבה במכונה ומשיכת מוט רחב מלמעלה למטה אל קו החזה.'),
-        ex('Seated DB Shoulder Press', 'ישיבה על ספסל זקוף ודחיפת משקולות מגובה הכתפיים מעל הראש.'),
-        ex('Dumbbell Bicep Curls', 'עמידה והרמת משקולות אל הכתפיים על ידי כיפוף המרפקים.'),
-        ex('Plank Mountain Climbers', 'מצב פלאנק על האמות והבאת ברכיים חלופיות לכיוון החזה.'),
+        ex('Dumbbell RDL', EXERCISE_DESCRIPTIONS['Dumbbell RDL'][1]),
+        ex('Dumbbell Bench Press', EXERCISE_DESCRIPTIONS['Dumbbell Bench Press'][1]),
+        ex('Lat Pulldown', EXERCISE_DESCRIPTIONS['Lat Pulldown'][1]),
+        ex('Seated DB Shoulder Press', EXERCISE_DESCRIPTIONS['Seated DB Shoulder Press'][1]),
+        ex('Dumbbell Bicep Curls', EXERCISE_DESCRIPTIONS['Dumbbell Bicep Curls'][1]),
+        ex('Plank Mountain Climbers', EXERCISE_DESCRIPTIONS['Plank Mountain Climbers'][1]),
       ],
     },
     {
       id: 'wk-b',
       name: 'Workout B',
       exercises: [
-        ex('Goblet Squat', 'ירידה לסקוואט כששתי הידיים מחזיקות משקולת אחת צמודה לחזה.'),
-        ex('Incline Dumbbell Press', 'לחיצת משקולות למעלה כשהספסל בשיפוע אלכסוני (חצי ישיבה).'),
-        ex('One-Arm Dumbbell Row', 'ברך ויד אחת נשענות על ספסל, והיד השנייה מושכת משקולת אל האגן.'),
-        ex('Dumbbell Reverse Lunges', 'עמידה עם משקולות בידיים ולקיחת צעד גדול אחורה תוך ירידה לברך.'),
-        ex('Tricep Pushdown', 'עמידה מול הפולי עליון ודחיפת החבל למטה עד יישור הזרועות.'),
-        ex('Side Plank Dips', 'פלאנק על הצד והרמה/הורדה של האגן באוויר.'),
+        ex('Goblet Squat', EXERCISE_DESCRIPTIONS['Goblet Squat'][1]),
+        ex('Incline Dumbbell Press', EXERCISE_DESCRIPTIONS['Incline Dumbbell Press'][1]),
+        ex('One-Arm Dumbbell Row', EXERCISE_DESCRIPTIONS['One-Arm Dumbbell Row'][1]),
+        ex('Dumbbell Reverse Lunges', EXERCISE_DESCRIPTIONS['Dumbbell Reverse Lunges'][1]),
+        ex('Tricep Pushdown', EXERCISE_DESCRIPTIONS['Tricep Pushdown'][1]),
+        ex('Side Plank Dips', EXERCISE_DESCRIPTIONS['Side Plank Dips'][1]),
       ],
     },
   ];
@@ -80,6 +102,15 @@ function migrateState(loaded) {
     state.selectedCategoryId = state.categories[0].id;
   }
   if (!state.workouts || state.workouts.length === 0) state.workouts = defaultWorkouts();
+  // Translate any leftover Hebrew exercise cues from earlier versions of
+  // this app into English, without touching text the user typed themselves.
+  state.workouts = state.workouts.map(w => ({
+    ...w,
+    exercises: w.exercises.map(e => {
+      const translated = LEGACY_DESCRIPTION_TO_ENGLISH[e.description];
+      return translated ? { ...e, description: translated } : e;
+    }),
+  }));
   if (!state.workoutProgress) state.workoutProgress = {};
   if (!state.activeWorkoutId || !state.workouts.find(w => w.id === state.activeWorkoutId)) {
     state.activeWorkoutId = state.workouts[0].id;
@@ -118,6 +149,9 @@ const TrashIcon = (p) => <Icon {...p}><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-1
 const GearIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="3" /><path d="M19.4 13.5c.04-.5.04-1 0-1.5l1.9-1.5-2-3.4-2.3.9a7.6 7.6 0 0 0-1.3-.8L15.3 5h-4l-.4 2.2c-.5.2-.9.5-1.3.8l-2.3-.9-2 3.4L7.2 12c-.04.5-.04 1 0 1.5l-1.9 1.5 2 3.4 2.3-.9c.4.3.8.6 1.3.8L11.3 20h4l.4-2.2c.5-.2.9-.5 1.3-.8l2.3.9 2-3.4-1.9-1.5Z" /></Icon>;
 const ChevronLeftIcon = (p) => <Icon {...p}><path d="M15 18l-6-6 6-6" /></Icon>;
 const CheckIcon = (p) => <Icon {...p} fill="none" strokeWidth="2.4"><path d="M5 13l4 4L19 7" /></Icon>;
+const ClockIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3.5 2" /></Icon>;
+const ChecklistIcon = (p) => <Icon {...p}><path d="M9 6h11M9 12h11M9 18h11" /><path d="m3.5 6 1.2 1.2L6.8 5" /><path d="m3.5 12 1.2 1.2L6.8 11" /><path d="m3.5 18 1.2 1.2L6.8 17" /></Icon>;
+const GridIcon = (p) => <Icon {...p}><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.8" /><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.8" /><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.8" /><rect x="13" y="13" width="7.5" height="7.5" rx="1.8" /></Icon>;
 
 function iconForCategory(name = '') {
   const n = name.toLowerCase();
@@ -139,6 +173,49 @@ function SegmentedControl({ options, value, onChange }) {
           {opt.label}
         </button>
       ))}
+    </div>
+  );
+}
+
+function TabBar({ tab, onChange }) {
+  const items = [
+    { value: 'workouts', label: 'Workouts', Icon: ChecklistIcon },
+    { value: 'timer', label: 'Timer', Icon: ClockIcon },
+    { value: 'categories', label: 'Categories', Icon: GridIcon },
+  ];
+  return (
+    <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/85 backdrop-blur-md border-t border-iosseparator"
+      style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      <div className="max-w-md mx-auto flex">
+        {items.map(({ value, label, Icon }) => {
+          const active = tab === value;
+          return (
+            <button key={value} onClick={() => onChange(value)}
+              className="flex-1 flex flex-col items-center gap-1 pt-2 pb-1.5">
+              <Icon className={`w-6 h-6 ${active ? 'text-iosblue' : 'text-iossecondary'}`} strokeWidth={active ? '2' : '1.6'} />
+              <span className={`text-[10px] font-medium ${active ? 'text-iosblue' : 'text-iossecondary'}`}>{label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function CompletionOverlay({ celebration }) {
+  if (!celebration) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/25 backdrop-blur-sm px-10">
+      <div className="bg-white rounded-3xl shadow-2xl px-8 py-9 flex flex-col items-center gap-2.5 text-center max-w-xs w-full animate-[popIn_0.28s_cubic-bezier(0.34,1.56,0.64,1)]">
+        <div className="w-16 h-16 rounded-full bg-[#34C75926] flex items-center justify-center mb-1">
+          <CheckIcon className="w-8 h-8 text-iosgreen" strokeWidth="2.8" />
+        </div>
+        <div className="text-[20px] font-bold">Great job!</div>
+        <div className="text-[14px] text-iossecondary">You finished {celebration.finishedName}.</div>
+        {celebration.nextName && (
+          <div className="text-[13px] text-iosblue font-medium mt-1">Switching to {celebration.nextName}…</div>
+        )}
+      </div>
     </div>
   );
 }
@@ -575,14 +652,29 @@ function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete }) {
   );
 }
 
-function CheckCircle({ checked, onClick }) {
+function CheckCircle({ checked }) {
   return (
-    <button onClick={onClick}
-      className={`w-7 h-7 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
+    <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
         checked ? 'bg-iosblue border-iosblue' : 'border-iosseparator bg-white'
       }`}>
       {checked && <CheckIcon className="w-4 h-4 text-white" />}
-    </button>
+    </div>
+  );
+}
+
+function ExerciseCard({ exercise, checked, onToggle }) {
+  return (
+    <Card className="overflow-hidden">
+      <div role="button" tabIndex={0} onClick={onToggle}
+        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
+        className={`w-full flex items-center gap-3 px-4 py-3.5 cursor-pointer active:bg-iosbg transition-colors ${checked ? 'opacity-50' : ''}`}>
+        <CheckCircle checked={checked} />
+        <div className="flex-1 min-w-0 text-left">
+          <div className={`font-semibold text-[15px] ${checked ? 'line-through text-iossecondary' : ''}`}>{exercise.name}</div>
+          {exercise.description && <div className="text-[13px] text-iossecondary mt-0.5">{exercise.description}</div>}
+        </div>
+      </div>
+    </Card>
   );
 }
 
@@ -593,38 +685,28 @@ function WorkoutRunView({ workout, progress, onToggleExercise, onResetProgress, 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-[28px] font-bold">My Workouts</h1>
+        <h1 className="text-[28px] font-bold">Workouts</h1>
         <IconButton onClick={onManage} title="Manage workouts"><GearIcon className="w-5 h-5" /></IconButton>
       </div>
 
-      <div className="bg-iosblue text-white rounded-2xl px-4 py-3 flex items-center justify-between">
-        <span className="font-semibold text-[15px]">Today: {workout.name}</span>
-        <span className="text-[13px] opacity-90">{doneCount}/{total} done</span>
-      </div>
-
-      {workouts.length > 1 && (
+      {workouts.length > 1 ? (
         <SegmentedControl
           options={workouts.map(w => ({ value: w.id, label: w.name }))}
           value={workout.id}
           onChange={onSwitchWorkout}
         />
+      ) : (
+        <div className="text-center text-[15px] font-semibold text-iosblue">{workout.name}</div>
       )}
 
-      <Card className="p-2">
-        {workout.exercises.map(exr => {
-          const checked = !!progress[exr.id];
-          return (
-            <div key={exr.id}
-              className={`flex items-start gap-3 p-3 rounded-xl transition-colors ${checked ? 'opacity-50' : ''}`}>
-              <CheckCircle checked={checked} onClick={() => onToggleExercise(exr.id, !checked)} />
-              <div className="flex-1 min-w-0">
-                <div className={`font-semibold text-[15px] ${checked ? 'line-through text-iossecondary' : ''}`}>{exr.name}</div>
-                {exr.description && <div className="text-[13px] text-iossecondary mt-0.5">{exr.description}</div>}
-              </div>
-            </div>
-          );
-        })}
-      </Card>
+      <div className="text-center text-[13px] text-iossecondary -mt-1">{doneCount} of {total} done</div>
+
+      <div className="flex flex-col gap-2.5">
+        {workout.exercises.map(exr => (
+          <ExerciseCard key={exr.id} exercise={exr} checked={!!progress[exr.id]}
+            onToggle={() => onToggleExercise(exr.id, !progress[exr.id])} />
+        ))}
+      </div>
 
       <button onClick={onResetProgress} className="w-full py-3 rounded-2xl bg-iosseparator text-[15px] font-medium text-ioslabel">
         Reset Checkmarks
@@ -701,6 +783,7 @@ function App() {
   }, [state]);
 
   const [tab, setTab] = useState('timer');
+  const [celebration, setCelebration] = useState(null);
 
   const selectedCategory = state.categories.find(c => c.id === state.selectedCategoryId) || state.categories[0];
 
@@ -736,15 +819,16 @@ function App() {
       const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress } };
 
       if (checked && allDone) {
-        celebrate();
         const idx = s.workouts.findIndex(w => w.id === workoutId);
         const nextWorkout = s.workouts.length > 1 ? s.workouts[(idx + 1) % s.workouts.length] : null;
+        celebrate(workout.name, nextWorkout ? nextWorkout.name : null);
         setTimeout(() => {
           setState(s2 => ({
             ...s2,
             workoutProgress: { ...s2.workoutProgress, [workoutId]: {} },
             activeWorkoutId: nextWorkout ? nextWorkout.id : s2.activeWorkoutId,
           }));
+          setCelebration(null);
         }, 2200);
       }
       return next;
@@ -777,7 +861,8 @@ function App() {
     });
   }
 
-  function celebrate() {
+  function celebrate(finishedName, nextName) {
+    setCelebration({ finishedName, nextName });
     if (typeof confetti !== 'function') return;
     confetti({ particleCount: 100, spread: 90, origin: { y: 0.5 }, colors: ['#007AFF', '#34C759', '#FF9500', '#FF3B30'] });
     setTimeout(() => confetti({ particleCount: 60, angle: 60, spread: 70, origin: { x: 0, y: 0.6 } }), 150);
@@ -785,13 +870,7 @@ function App() {
   }
 
   return (
-    <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-6 pb-10 gap-5">
-      <SegmentedControl
-        options={[{ value: 'timer', label: 'Timer' }, { value: 'workouts', label: 'Workouts (A/B)' }, { value: 'categories', label: 'Categories' }]}
-        value={tab}
-        onChange={setTab}
-      />
-
+    <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-6 gap-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 84px)' }}>
       {tab === 'timer' && (
         <TimerTab
           category={selectedCategory}
@@ -826,6 +905,9 @@ function App() {
           onDeleteWorkout={deleteWorkout}
         />
       )}
+
+      <TabBar tab={tab} onChange={setTab} />
+      <CompletionOverlay celebration={celebration} />
     </div>
   );
 }
