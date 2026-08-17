@@ -1,116 +1,72 @@
 <!DOCTYPE html>
-<html lang="he" dir="rtl">
+<html lang="en" dir="ltr">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>אימוני כושר</title>
+<title>Fitness Timer</title>
 <link rel="manifest" href="manifest.json">
-<meta name="theme-color" content="#0f172a">
-<link rel="stylesheet" href="style.css">
+<meta name="theme-color" content="#F2F2F7">
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: {
+          sf: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', '"Segoe UI"', 'Roboto', 'sans-serif'],
+        },
+        colors: {
+          iosbg: '#F2F2F7',
+          ioscard: '#FFFFFF',
+          iosblue: '#007AFF',
+          iosgreen: '#34C759',
+          iosred: '#FF3B30',
+          iosorange: '#FF9500',
+          iossecondary: '#8E8E93',
+          iosseparator: '#E5E5EA',
+          ioslabel: '#1C1C1E',
+        },
+      },
+    },
+  };
+</script>
+<style>
+  html, body { background: #F2F2F7; height: 100%; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior-y: none;
+  }
+  * { box-sizing: border-box; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+  input[type=number] { -moz-appearance: textfield; }
+  .progress-ring-fg { transition: stroke-dashoffset 0.2s linear, stroke 0.3s ease; }
+  ::selection { background: #007AFF33; }
+</style>
 </head>
-<body>
-<div class="app">
+<body class="bg-iosbg text-ioslabel font-sf">
+<div id="root"></div>
 
-  <nav class="tabbar">
-    <button class="tab active" data-tab="timer">⏱ טיימר</button>
-    <button class="tab" data-tab="categories">📋 קטגוריות</button>
-    <button class="tab" data-tab="workout">🏋 אימון</button>
-  </nav>
-
-  <!-- ===== TIMER TAB ===== -->
-  <section id="tab-timer" class="tab-panel active">
-
-    <div class="category-select-row">
-      <label for="categoryPicker">קטגוריה</label>
-      <select id="categoryPicker"></select>
-    </div>
-
-    <div class="timer-config-summary" id="timerConfigSummary">עבודה 1:20 · מנוחה 0:30 · 3 סיבובים</div>
-    <div class="timer-config-hint">אפשר לערוך זמנים בטאב הקטגוריות</div>
-
-    <div class="timer-display-wrap">
-      <div class="phase-label" id="phaseLabel">מוכן</div>
-      <div class="timer-display" id="timerDisplay">01:20</div>
-      <div class="round-counter" id="roundCounter">סיבוב 1 מתוך 3</div>
-      <div class="progress-ring-wrap">
-        <svg viewBox="0 0 200 200" class="progress-ring">
-          <circle class="progress-ring-bg" cx="100" cy="100" r="90"></circle>
-          <circle class="progress-ring-fg" id="progressRing" cx="100" cy="100" r="90"></circle>
-        </svg>
-      </div>
-    </div>
-
-    <div class="timer-controls">
-      <button id="resetBtn" class="btn btn-secondary">איפוס</button>
-      <button id="startPauseBtn" class="btn btn-primary">התחל</button>
-      <button id="skipBtn" class="btn btn-secondary">דלג</button>
-    </div>
-  </section>
-
-  <!-- ===== CATEGORIES TAB ===== -->
-  <section id="tab-categories" class="tab-panel">
-    <div class="categories-header">
-      <h2>קטגוריות אימון</h2>
-      <button id="addCategoryBtn" class="btn btn-primary btn-small">+ קטגוריה חדשה</button>
-    </div>
-    <ul class="category-list" id="categoryList"></ul>
-  </section>
-
-  <!-- ===== WORKOUT TAB ===== -->
-  <section id="tab-workout" class="tab-panel">
-
-    <!-- ---- RUN VIEW: today's workout ---- -->
-    <div id="workoutRunView">
-      <div class="category-select-row">
-        <label for="activeWorkoutPicker">האימון של היום</label>
-        <select id="activeWorkoutPicker"></select>
-        <button id="manageWorkoutsBtn" class="icon-btn" title="ניהול אימונים">⚙</button>
-      </div>
-
-      <div class="run-progress" id="runProgress"></div>
-      <ul class="exercise-run-list" id="exerciseRunList"></ul>
-
-      <div class="workout-empty-state" id="workoutEmptyState" style="display:none;">
-        <p>עוד לא הגדרת אימונים.</p>
-        <button id="emptyStateAddBtn" class="btn btn-primary btn-small">+ צור אימון ראשון</button>
-      </div>
-
-      <button id="resetChecksBtn" class="btn btn-secondary">איפוס סימונים</button>
-    </div>
-
-    <!-- ---- MANAGE VIEW: list of workouts ---- -->
-    <div id="workoutManageView" style="display:none;">
-      <div class="workout-edit-header">
-        <button id="backFromManageBtn" class="icon-btn">→ חזרה</button>
-        <h2>ניהול אימונים</h2>
-      </div>
-      <button id="addWorkoutBtn" class="btn btn-primary btn-small">+ אימון חדש</button>
-      <ul class="workout-list" id="workoutList"></ul>
-    </div>
-
-    <!-- ---- EDIT VIEW: create/edit a workout ---- -->
-    <div id="workoutEditView" style="display:none;">
-      <div class="workout-edit-header">
-        <button id="backFromEditBtn" class="icon-btn">→ חזרה</button>
-        <input id="workoutNameInput" class="workout-name-input" placeholder="שם האימון (למשל: אימון A)">
-      </div>
-
-      <div class="import-box">
-        <label>הדביקי כאן רשימת תרגילים (למשל מה-Gemini) וייבאי אוטומטית</label>
-        <textarea id="importTextarea" rows="6" placeholder="* שם תרגיל&#10;   * איך מזהים: ..."></textarea>
-        <button id="importBtn" class="btn btn-secondary btn-small">ייבוא לרשימה</button>
-      </div>
-
-      <ul class="exercise-edit-list" id="exerciseEditList"></ul>
-      <button id="addExerciseRowBtn" class="btn btn-secondary btn-small">+ הוסף תרגיל ידנית</button>
-      <button id="saveWorkoutBtn" class="btn btn-primary">שמירת אימון</button>
-    </div>
-
-  </section>
-
-</div>
-
-<audio id="beepAudio" preload="auto"></audio>
-<script src="app.js"></script>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+<script>
+  fetch('app.jsx')
+    .then(r => r.text())
+    .then(code => {
+      const output = Babel.transform(code, {
+        presets: [['react', { runtime: 'classic' }]],
+        filename: 'app.jsx',
+      }).code;
+      const script = document.createElement('script');
+      script.textContent = output;
+      document.body.appendChild(script);
+    })
+    .catch(err => {
+      document.getElementById('root').textContent = 'Failed to load app: ' + err.message;
+      console.error(err);
+    });
+</script>
 </body>
 </html>
