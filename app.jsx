@@ -432,27 +432,29 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     return audioCtxRef.current;
   }
 
-  function playTone(ctx, freq, startTime, duration, volume = 0.85) {
+  // Sawtooth lead + sub-octave square "thump" reads as a hard sports-buzzer
+  // rather than a soft bell — a near-instant attack (not a gentle swell)
+  // is what makes it feel punchy/loud instead of pleasant.
+  function playTone(ctx, freq, startTime, duration, volume = 0.95) {
     const dest = compressorRef.current;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = 'triangle';
+    osc.type = 'sawtooth';
     osc.frequency.value = freq;
     gain.gain.setValueAtTime(0, startTime);
-    gain.gain.linearRampToValueAtTime(volume, startTime + 0.02);
+    gain.gain.linearRampToValueAtTime(volume, startTime + 0.004);
     gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
     osc.connect(gain);
     gain.connect(dest);
     osc.start(startTime);
     osc.stop(startTime + duration + 0.05);
 
-    // Quieter octave-up layer for a richer, more cut-through timbre.
     const osc2 = ctx.createOscillator();
     const gain2 = ctx.createGain();
-    osc2.type = 'sine';
-    osc2.frequency.value = freq * 2;
+    osc2.type = 'square';
+    osc2.frequency.value = freq / 2;
     gain2.gain.setValueAtTime(0, startTime);
-    gain2.gain.linearRampToValueAtTime(volume * 0.35, startTime + 0.02);
+    gain2.gain.linearRampToValueAtTime(volume * 0.55, startTime + 0.004);
     gain2.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
     osc2.connect(gain2);
     gain2.connect(dest);
@@ -464,9 +466,18 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     const ctx = ensureAudio();
     if (!ctx) return;
     const t0 = ctx.currentTime;
-    if (type === 'rest') { playTone(ctx, 880, t0, 0.30); playTone(ctx, 587, t0 + 0.18, 0.36); }
-    else if (type === 'work') { playTone(ctx, 587, t0, 0.30); playTone(ctx, 880, t0 + 0.18, 0.36); }
-    else if (type === 'finish') { playTone(ctx, 659, t0, 0.28); playTone(ctx, 784, t0 + 0.20, 0.30); playTone(ctx, 988, t0 + 0.42, 0.55, 0.95); }
+    if (type === 'rest') {
+      playTone(ctx, 880, t0, 0.22, 1);
+      playTone(ctx, 587, t0 + 0.16, 0.30, 1);
+    } else if (type === 'work') {
+      playTone(ctx, 587, t0, 0.22, 1);
+      playTone(ctx, 880, t0 + 0.16, 0.30, 1);
+    } else if (type === 'finish') {
+      // Boxing-round-buzzer style: one sustained low blast, then two sharp accents.
+      playTone(ctx, 196, t0, 0.7, 1);
+      playTone(ctx, 784, t0 + 0.75, 0.16, 1);
+      playTone(ctx, 784, t0 + 0.95, 0.22, 1);
+    }
   }
 
   // Sharp, percussive movie-clock-style tick, deliberately distinct in timbre
@@ -479,14 +490,26 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
     osc.type = 'square';
-    osc.frequency.value = 1200;
+    osc.frequency.value = 1000;
     gain.gain.setValueAtTime(0, t0);
-    gain.gain.linearRampToValueAtTime(0.95, t0 + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.11);
+    gain.gain.linearRampToValueAtTime(1, t0 + 0.004);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
     osc.connect(gain);
     gain.connect(dest);
     osc.start(t0);
-    osc.stop(t0 + 0.15);
+    osc.stop(t0 + 0.16);
+
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'square';
+    osc2.frequency.value = 500;
+    gain2.gain.setValueAtTime(0, t0);
+    gain2.gain.linearRampToValueAtTime(0.5, t0 + 0.004);
+    gain2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
+    osc2.connect(gain2);
+    gain2.connect(dest);
+    osc2.start(t0);
+    osc2.stop(t0 + 0.16);
   }
 
   function finishRoundOrDone() {
@@ -670,6 +693,11 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
             <div className="text-[13px] text-iossecondary mt-1">Round {round} of {category.rounds}</div>
             <div className="text-[12px] text-iossecondary mt-2">{nextUpLabel()}</div>
           </div>
+          {phase === 'countdown' && (
+            <div className="absolute inset-0 z-50 flex items-center justify-center">
+              <div className="text-white text-[140px] font-extrabold leading-none tabular-nums drop-shadow-2xl">{remaining}</div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -701,9 +729,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       </div>
 
       {phase === 'countdown' && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center pointer-events-none">
-          <div className="text-white text-[160px] font-extrabold leading-none tabular-nums drop-shadow-2xl">{remaining}</div>
-        </div>
+        <div className="fixed inset-0 z-[45] bg-black/40 pointer-events-none" />
       )}
     </div>
   );
