@@ -11,9 +11,11 @@ function uid(prefix) {
 // sides: 'together' (both arms/legs work at once, e.g. a squat or bench
 // press) or 'alternating' (you work one side, then the other, e.g. a
 // one-arm row or reverse lunges) — drives which timing profile the Timer
-// auto-switches to when this exercise is the current one.
-function ex(name, description, sides = 'together') {
-  return { id: uid('ex'), name, description, sides };
+// auto-switches to when this exercise is the current one. `sets` is how
+// many rounds Auto mode (and manual current-exercise linking) runs for
+// this exercise before moving on, overriding the category's own rounds.
+function ex(name, description, sides = 'together', sets = 3) {
+  return { id: uid('ex'), name, description, sides, sets };
 }
 
 // Maps each exercise name to its old Hebrew cue and new English cue, so we
@@ -99,6 +101,7 @@ function defaultState() {
     activeWorkoutId: workouts[0].id,
     soundEnabled: true,
     currentExerciseOverride: {},
+    autoRunWorkoutId: null,
   };
 }
 
@@ -129,7 +132,7 @@ function migrateState(loaded) {
   if (!state.workouts || state.workouts.length === 0) state.workouts = defaultWorkouts();
   // Translate any leftover Hebrew exercise cues from earlier versions of
   // this app into English, without touching text the user typed themselves.
-  // Also backfill `sides` on exercises saved before that field existed.
+  // Also backfill `sides`/`sets` on exercises saved before those fields existed.
   state.workouts = state.workouts.map(w => ({
     ...w,
     exercises: w.exercises.map(e => {
@@ -138,7 +141,8 @@ function migrateState(loaded) {
       // data) — once `sides` exists, it's the user's real choice and is
       // never second-guessed by name again.
       const sides = e.sides == null ? (DEFAULT_SIDES_BY_NAME[e.name] || 'together') : e.sides;
-      return { ...e, description: translated || e.description, sides };
+      const sets = e.sets == null ? 3 : e.sets;
+      return { ...e, description: translated || e.description, sides, sets };
     }),
   }));
   if (!state.workoutProgress) state.workoutProgress = {};
@@ -147,6 +151,7 @@ function migrateState(loaded) {
   }
   if (typeof state.soundEnabled !== 'boolean') state.soundEnabled = true;
   if (!state.currentExerciseOverride) state.currentExerciseOverride = {};
+  if (state.autoRunWorkoutId === undefined) state.autoRunWorkoutId = null;
   return state;
 }
 
@@ -366,7 +371,8 @@ function TimeRow({ label, sec, onCommit }) {
 const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' };
 const COUNTDOWN_SEC = 3;
 
-function TimerTab({ category, categories, onSelectCategory, soundEnabled, onToggleSound, currentExercise }) {
+function TimerTab({ category, categories, onSelectCategory, soundEnabled, onToggleSound, currentExercise,
+  nextExercise, autoRun, onAutoExerciseComplete, onStopAuto }) {
   const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
   const remainingRef = useRef(category.workSec);
@@ -379,6 +385,8 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const audioElRef = useRef(null);
   const wakeLockRef = useRef(null);
   const effectiveRef = useRef({ workSec: category.workSec, restSec: category.restSec });
+  const autoStartedForRef = useRef(null); // id of the exercise the current Auto cycle was started for
+  const autoCompletedForRef = useRef(null); // guards against double-firing completion for the same 'done' state
   const [, forceRender] = useReducer(x => x + 1, 0);
 
   // The current exercise can change mid-phase (e.g. you tap a different
@@ -393,6 +401,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   effectiveRef.current = {
     workSec: usingAlt ? category.altWorkSec : category.workSec,
     restSec: usingAlt ? category.altRestSec : category.restSec,
+    rounds: (currentExercise && currentExercise.sets) ? currentExercise.sets : category.rounds,
   };
 
   useEffect(() => {
@@ -430,12 +439,37 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
+  // Auto mode, part 1: whenever a new exercise becomes current while nothing
+  // is actively running (idle, or just finished), kick off its countdown +
+  // work/rest cycle on its own — no Start tap needed. Guarded so it only
+  // fires once per exercise (never interrupts a phase already in progress).
+  useEffect(() => {
+    if (!autoRun || !currentExercise) return;
+    if (currentExercise.id === autoStartedForRef.current) return;
+    if (phase !== 'idle' && phase !== 'done') return;
+    autoStartedForRef.current = currentExercise.id;
+    autoCompletedForRef.current = null;
+    start();
+    // eslint-disable-next-line
+  }, [autoRun, currentExercise && currentExercise.id, phase]);
+
+  // Auto mode, part 2: once an exercise's sets are all done, check it off —
+  // which advances the App's "current exercise" to the next one, which part
+  // 1 above then picks up automatically.
+  useEffect(() => {
+    if (!autoRun || phase !== 'done' || !currentExercise) return;
+    if (autoCompletedForRef.current === currentExercise.id) return;
+    autoCompletedForRef.current = currentExercise.id;
+    onAutoExerciseComplete(currentExercise.id);
+    // eslint-disable-next-line
+  }, [autoRun, phase]);
+
   function updateMediaSession() {
     if (!('mediaSession' in navigator)) return;
     try {
       navigator.mediaSession.metadata = new MediaMetadata({
         title: `${category.name} — ${PHASE_LABELS[phaseRef.current] || ''}`,
-        artist: `Round ${roundRef.current} of ${category.rounds}`,
+        artist: `Round ${roundRef.current} of ${effectiveRef.current.rounds}`,
       });
       navigator.mediaSession.playbackState = runningRef.current ? 'playing' : 'paused';
     } catch (e) { /* unsupported */ }
@@ -554,7 +588,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   }
 
   function finishRoundOrDone() {
-    if (roundRef.current >= category.rounds) {
+    if (roundRef.current >= effectiveRef.current.rounds) {
       playChime('finish');
       phaseRef.current = 'done';
       runningRef.current = false;
@@ -680,7 +714,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const phaseLabel = PHASE_LABELS[phase];
 
   function nextUpLabel() {
-    const isLastRound = round >= category.rounds;
+    const isLastRound = round >= effectiveRef.current.rounds;
     if (phase === 'work') {
       if (effectiveRef.current.restSec > 0) return `Next · Rest ${fmtTime(effectiveRef.current.restSec)}`;
       return isLastRound ? 'Last interval' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
@@ -719,7 +753,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         </div>
         <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
           <span className="text-[11px] text-iossecondary font-medium">Rounds</span>
-          <span className="text-[13px] font-semibold tabular-nums">{category.rounds}</span>
+          <span className="text-[13px] font-semibold tabular-nums">{effectiveRef.current.rounds}</span>
         </div>
       </div>
       {showExerciseLink ? (
@@ -728,6 +762,13 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         </div>
       ) : (
         <div className="text-center text-[11px] text-iossecondary -mt-4">Edit times in the Categories tab</div>
+      )}
+      {autoRun && (
+        <div className="flex items-center justify-center gap-2 -mt-2">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2.5 py-1 rounded-full">Auto</span>
+          {nextExercise && <span className="text-[12px] text-iossecondary">Up next: {nextExercise.name}</span>}
+          <button onClick={onStopAuto} className="text-[12px] text-iosred font-medium">Stop</button>
+        </div>
       )}
 
       <div className="flex flex-col items-center justify-center py-2 relative">
@@ -741,7 +782,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
             <div className="text-[13px] font-semibold uppercase tracking-wide text-iossecondary">{phaseLabel}</div>
             <div className="text-[56px] font-bold font-mono tabular-nums leading-none">{fmtTime(remaining)}</div>
-            <div className="text-[13px] text-iossecondary mt-1">Round {round} of {category.rounds}</div>
+            <div className="text-[13px] text-iossecondary mt-1">Round {round} of {effectiveRef.current.rounds}</div>
             <div className="text-[12px] text-iossecondary mt-2">{nextUpLabel()}</div>
           </div>
           {phase === 'countdown' && (
@@ -863,11 +904,19 @@ function ExerciseEditRow({ exercise, onChange, onDelete }) {
       <input value={exercise.description} placeholder="How to identify (optional)"
         onChange={e => onChange({ ...exercise, description: e.target.value })}
         className="text-[16px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue text-iossecondary" />
-      <SegmentedControl
-        options={[{ value: 'together', label: 'Both sides together' }, { value: 'alternating', label: 'One side at a time' }]}
-        value={exercise.sides === 'alternating' ? 'alternating' : 'together'}
-        onChange={sides => onChange({ ...exercise, sides })}
-      />
+      <div className="flex items-center gap-2">
+        <SegmentedControl
+          options={[{ value: 'together', label: 'Both sides together' }, { value: 'alternating', label: 'One side at a time' }]}
+          value={exercise.sides === 'alternating' ? 'alternating' : 'together'}
+          onChange={sides => onChange({ ...exercise, sides })}
+        />
+        <div className="flex flex-col gap-0.5 items-center bg-iosbg rounded-xl px-2 py-1.5 shrink-0">
+          <label className="text-[10px] text-iossecondary font-medium">Sets</label>
+          <input type="number" min="1" max="20" value={exercise.sets == null ? 3 : exercise.sets}
+            onChange={e => onChange({ ...exercise, sets: clamp(Number(e.target.value) || 1, 1, 20) })}
+            className="w-10 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+        </div>
+      </div>
     </div>
   );
 }
@@ -913,6 +962,7 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
         name: e.name.trim(),
         description: (e.description || '').trim(),
         sides: e.sides === 'alternating' ? 'alternating' : 'together',
+        sets: clamp(Number(e.sets) || 3, 1, 20),
       }));
     if (clean.length === 0) { alert('Add at least one exercise'); return; }
     onSave({ id: workout ? workout.id : uid('wk'), name: cleanName, exercises: clean });
@@ -1050,7 +1100,7 @@ function ExerciseCard({ exercise, checked, isCurrent, onToggle, onSetCurrent, on
 }
 
 function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, onSetCurrentExercise, onResetProgress,
-  onSwitchWorkout, workouts, onManage, onSaveWorkout }) {
+  onSwitchWorkout, workouts, onManage, onSaveWorkout, isAutoRunning, onStartAuto, onStopAuto }) {
   const doneCount = workout.exercises.filter(e => progress[e.id]).length;
   const total = workout.exercises.length;
   const [reorderList, setReorderList] = useState(null); // non-null = reorder mode is active
@@ -1111,7 +1161,15 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <h1 className="text-[28px] font-bold">Workouts</h1>
-        <IconButton onClick={onManage} title="Manage workouts"><GearIcon className="w-5 h-5" /></IconButton>
+        <div className="flex items-center gap-1">
+          <button onClick={() => isAutoRunning ? onStopAuto() : onStartAuto(workout.id)}
+            className={`px-3.5 py-1.5 rounded-full text-[13px] font-semibold transition ${
+              isAutoRunning ? 'bg-iosorange text-white' : 'bg-iosseparator text-ioslabel'
+            }`}>
+            {isAutoRunning ? 'Auto ⏸' : 'Auto ▶'}
+          </button>
+          <IconButton onClick={onManage} title="Manage workouts"><GearIcon className="w-5 h-5" /></IconButton>
+        </div>
       </div>
 
       {workouts.length > 1 ? (
@@ -1144,7 +1202,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
 }
 
 function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExercise, onToggleExercise, onResetProgress, onSetActiveWorkout,
-  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise }) {
+  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise, autoRunWorkoutId, onStartAuto, onStopAuto }) {
   const [view, setView] = useState('run'); // run | manage | edit
   const [editingId, setEditingId] = useState(null);
 
@@ -1200,6 +1258,9 @@ function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExerci
       workouts={workouts}
       onManage={() => setView('manage')}
       onSaveWorkout={onSaveWorkout}
+      isAutoRunning={autoRunWorkoutId === activeWorkout.id}
+      onStartAuto={onStartAuto}
+      onStopAuto={onStopAuto}
     />
   );
 }
@@ -1234,6 +1295,45 @@ function App() {
     return workout.exercises.find(e => !progress[e.id]) || null;
   }
   const currentExercise = getCurrentExercise(state.activeWorkoutId);
+
+  // The exercise Auto mode (and the Timer's "up next" preview) will move to
+  // once the current one's sets are done — the next not-yet-checked
+  // exercise after the current one in the workout's own order.
+  function getNextExercise(workoutId, currentEx) {
+    if (!currentEx) return null;
+    const workout = state.workouts.find(w => w.id === workoutId);
+    if (!workout) return null;
+    const progress = state.workoutProgress[workoutId] || {};
+    const idx = workout.exercises.findIndex(e => e.id === currentEx.id);
+    if (idx === -1) return null;
+    return workout.exercises.slice(idx + 1).find(e => !progress[e.id]) || null;
+  }
+  const nextExercise = getNextExercise(state.activeWorkoutId, currentExercise);
+  const autoRun = !!state.autoRunWorkoutId && state.autoRunWorkoutId === state.activeWorkoutId;
+
+  function startAuto(workoutId) {
+    setState(s => {
+      const currentExerciseOverride = { ...s.currentExerciseOverride };
+      delete currentExerciseOverride[workoutId]; // auto mode always follows the real order, not a manual pin
+      // Prefer whichever category has alternating-sides timing configured —
+      // that's the one this whole feature makes sense for.
+      const smartCategory = s.categories.find(c => c.altWorkSec != null);
+      return {
+        ...s,
+        activeWorkoutId: workoutId,
+        autoRunWorkoutId: workoutId,
+        currentExerciseOverride,
+        selectedCategoryId: smartCategory ? smartCategory.id : s.selectedCategoryId,
+      };
+    });
+    setTab('timer');
+  }
+  function stopAuto() {
+    setState(s => ({ ...s, autoRunWorkoutId: null }));
+  }
+  function completeAutoExercise(exerciseId) {
+    toggleExercise(state.activeWorkoutId, exerciseId, true);
+  }
 
   function setCurrentExercise(workoutId, exerciseId) {
     setState(s => ({ ...s, currentExerciseOverride: { ...s.currentExerciseOverride, [workoutId]: exerciseId } }));
@@ -1280,7 +1380,10 @@ function App() {
       // Checking off the exercise that was manually set as "current" clears
       // the override, so the next unchecked exercise takes over automatically.
       if (checked && currentExerciseOverride[workoutId] === exerciseId) delete currentExerciseOverride[workoutId];
-      const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress }, currentExerciseOverride };
+      // Finishing the workout also ends Auto mode for it — Auto mode is
+      // scoped to running through one workout, not chaining into the next.
+      const autoRunWorkoutId = (checked && allDone && s.autoRunWorkoutId === workoutId) ? null : s.autoRunWorkoutId;
+      const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress }, currentExerciseOverride, autoRunWorkoutId };
 
       if (checked && allDone) {
         const idx = s.workouts.findIndex(w => w.id === workoutId);
@@ -1332,7 +1435,8 @@ function App() {
       const currentExerciseOverride = { ...s.currentExerciseOverride };
       delete currentExerciseOverride[id];
       const activeWorkoutId = s.activeWorkoutId === id ? (workouts[0] ? workouts[0].id : null) : s.activeWorkoutId;
-      return { ...s, workouts, workoutProgress, currentExerciseOverride, activeWorkoutId };
+      const autoRunWorkoutId = s.autoRunWorkoutId === id ? null : s.autoRunWorkoutId;
+      return { ...s, workouts, workoutProgress, currentExerciseOverride, activeWorkoutId, autoRunWorkoutId };
     });
   }
 
@@ -1354,6 +1458,10 @@ function App() {
           soundEnabled={state.soundEnabled}
           onToggleSound={() => setState(s => ({ ...s, soundEnabled: !s.soundEnabled }))}
           currentExercise={currentExercise}
+          nextExercise={nextExercise}
+          autoRun={autoRun}
+          onAutoExerciseComplete={completeAutoExercise}
+          onStopAuto={stopAuto}
         />
       </div>
 
@@ -1381,6 +1489,9 @@ function App() {
           onSaveWorkout={saveWorkout}
           onDeleteWorkout={deleteWorkout}
           onSetCurrentExercise={setCurrentExercise}
+          autoRunWorkoutId={state.autoRunWorkoutId}
+          onStartAuto={startAuto}
+          onStopAuto={stopAuto}
         />
       </div>
 
