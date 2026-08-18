@@ -828,7 +828,10 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
                 <span>Different timing for one-side-at-a-time exercises</span>
                 <input type="checkbox" checked={cat.altWorkSec != null && cat.altRestSec != null}
                   onChange={e => onUpdateCategory(cat.id, e.target.checked
-                    ? { altWorkSec: cat.workSec, altRestSec: cat.restSec }
+                    // Seed with values that are actually different from Work/Rest
+                    // above (longer work, shorter rest) — starting identical would
+                    // silently do nothing until the user also edited these below.
+                    ? { altWorkSec: cat.workSec + 25, altRestSec: Math.max(5, cat.restSec - 10) }
                     : { altWorkSec: null, altRestSec: null })}
                   className="w-5 h-5 accent-iosblue shrink-0" />
               </label>
