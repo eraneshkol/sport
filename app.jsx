@@ -908,7 +908,12 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
     const cleanName = name.trim();
     if (!cleanName) { alert('Please give the workout a name'); return; }
     const clean = exercises.filter(e => e.name && e.name.trim())
-      .map(e => ({ id: e.id || uid('ex'), name: e.name.trim(), description: (e.description || '').trim() }));
+      .map(e => ({
+        id: e.id || uid('ex'),
+        name: e.name.trim(),
+        description: (e.description || '').trim(),
+        sides: e.sides === 'alternating' ? 'alternating' : 'together',
+      }));
     if (clean.length === 0) { alert('Add at least one exercise'); return; }
     onSave({ id: workout ? workout.id : uid('wk'), name: cleanName, exercises: clean });
   }
