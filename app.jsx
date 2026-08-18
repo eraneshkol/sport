@@ -390,6 +390,15 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const autoFirstDoneRef = useRef(false); // true once this Auto *run* has done its one countdown
   const [, forceRender] = useReducer(x => x + 1, 0);
 
+  // If the app is closed/reloaded while Auto is active, `autoRun` comes back
+  // true again on the very first render from persisted state — but that
+  // should NOT resume the timer on its own; the user should have to press
+  // Play. Lazily captured once, on this component's actual first render, so
+  // pressing the Auto button later in the same live session (a real false ->
+  // true transition, not "already true on mount") is unaffected.
+  const autoSuppressedRef = useRef(null);
+  if (autoSuppressedRef.current === null) autoSuppressedRef.current = autoRun;
+
   // The current exercise can change mid-phase (e.g. you tap a different
   // exercise on the checklist while resting) — that must NOT interrupt a
   // running phase. So this is just a plain assignment on every render (not a
@@ -440,11 +449,12 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
-  // Auto mode resets its "first exercise of this run" tracking every time
-  // Auto is (re)started, so stopping and starting it again later still gets
-  // one fresh countdown for whatever exercise it resumes on.
+  // Auto mode resets its "first exercise of this run" tracking at the exact
+  // moment a new Auto run begins (autoRun going false -> true), so stopping
+  // and starting it again later still gets one fresh countdown for whatever
+  // exercise it resumes on.
   useEffect(() => {
-    if (!autoRun) autoFirstDoneRef.current = false;
+    if (autoRun) autoFirstDoneRef.current = false;
   }, [autoRun]);
 
   // Auto mode, part 1: whenever a new exercise becomes current while nothing
@@ -455,6 +465,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   // once per exercise (never interrupts a phase already in progress).
   useEffect(() => {
     if (!autoRun || !currentExercise) return;
+    if (autoSuppressedRef.current) return; // resumed after a reload — wait for a manual Start/Resume
     if (currentExercise.id === autoStartedForRef.current) return;
     if (phase !== 'idle' && phase !== 'done') return;
     autoStartedForRef.current = currentExercise.id;
@@ -663,6 +674,11 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   }
 
   function start() {
+    autoSuppressedRef.current = false; // any manual Start/Resume re-arms Auto's own auto-advancing
+    // A manual Start while Auto is active (e.g. resuming after a reload)
+    // IS this run's one countdown — later exercises still shouldn't get
+    // another one just because the auto-effect itself never fired here.
+    if (autoRun) autoFirstDoneRef.current = true;
     if (phaseRef.current === 'idle' || phaseRef.current === 'done') {
       phaseRef.current = 'countdown';
       roundRef.current = 1;
