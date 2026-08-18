@@ -473,10 +473,13 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       playBeep(ctx, 1760, t0, 0.11, 1, 'square', 8);
       playBeep(ctx, 2349, t0 + 0.14, 0.15, 1, 'square', 8);
     } else if (type === 'finish') {
-      // A real buzzer, not a melodic jingle: low, sustained, harshly detuned
-      // for a beating "buzz" texture, fired as two short blasts.
-      playBeep(ctx, 220, t0, 0.42, 1, 'square', 14);
-      playBeep(ctx, 220, t0 + 0.48, 0.55, 1, 'square', 14);
+      // The exact same voice as the countdown ticks (same pitch/waveform/
+      // detune) so finishing all rounds is instantly recognizable as
+      // "that countdown sound again" — just 4 pulses instead of 3, and
+      // each one held a bit longer.
+      for (let i = 0; i < 4; i++) {
+        playBeep(ctx, 2637, t0 + i * 0.24, 0.16, 1, 'square', 10);
+      }
     }
   }
 
