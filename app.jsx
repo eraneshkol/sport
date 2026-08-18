@@ -762,7 +762,10 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   }
 
   const CIRC = 2 * Math.PI * 90;
-  const fraction = total > 0 ? remaining / total : 0;
+  // Uses continuous elapsed time (not the rounded whole-second `remaining`)
+  // so the ring sweeps smoothly instead of snapping once per second.
+  const msRemaining = phase === 'idle' ? total * 1000 : Math.max(0, Math.min(total * 1000, phaseEndAtRef.current - Date.now()));
+  const fraction = total > 0 ? msRemaining / (total * 1000) : 0;
   const ringColor = phase === 'work' ? '#33A34F' : phase === 'rest' ? '#007AFF' : phase === 'done' ? '#34C759' : '#33A34F';
   const phaseLabel = PHASE_LABELS[phase];
 
@@ -1216,10 +1219,8 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
         <h1 className="text-[28px] font-bold">Workouts</h1>
         <div className="flex items-center gap-1">
           <button onClick={() => isAutoRunning ? onStopAuto() : onStartAuto(workout.id)}
-            className={`px-3.5 py-1.5 rounded-full text-[13px] font-semibold transition ${
-              isAutoRunning ? 'bg-iosorange text-white' : 'bg-iosseparator text-ioslabel'
-            }`}>
-            {isAutoRunning ? 'Auto ⏸' : 'Auto ▶'}
+            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-semibold transition bg-iosseparator text-ioslabel">
+            {isAutoRunning ? <PauseIcon className="w-3.5 h-3.5" /> : <PlayIcon className="w-3.5 h-3.5" />} Auto
           </button>
           <IconButton onClick={onManage} title="Manage workouts"><GearIcon className="w-5 h-5" /></IconButton>
         </div>
