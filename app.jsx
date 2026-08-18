@@ -387,6 +387,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const effectiveRef = useRef({ workSec: category.workSec, restSec: category.restSec });
   const autoStartedForRef = useRef(null); // id of the exercise the current Auto cycle was started for
   const autoCompletedForRef = useRef(null); // guards against double-firing completion for the same 'done' state
+  const autoFirstDoneRef = useRef(false); // true once this Auto *run* has done its one countdown
   const [, forceRender] = useReducer(x => x + 1, 0);
 
   // The current exercise can change mid-phase (e.g. you tap a different
@@ -439,17 +440,31 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     return () => document.removeEventListener('visibilitychange', onVisible);
   }, []);
 
+  // Auto mode resets its "first exercise of this run" tracking every time
+  // Auto is (re)started, so stopping and starting it again later still gets
+  // one fresh countdown for whatever exercise it resumes on.
+  useEffect(() => {
+    if (!autoRun) autoFirstDoneRef.current = false;
+  }, [autoRun]);
+
   // Auto mode, part 1: whenever a new exercise becomes current while nothing
-  // is actively running (idle, or just finished), kick off its countdown +
-  // work/rest cycle on its own — no Start tap needed. Guarded so it only
-  // fires once per exercise (never interrupts a phase already in progress).
+  // is actively running (idle, or just finished), kick off its work/rest
+  // cycle on its own — no Start tap needed. Only the very first exercise of
+  // an Auto run gets the 3-2-1 countdown; every exercise after that jumps
+  // straight into work (see beginWorkDirectly). Guarded so it only fires
+  // once per exercise (never interrupts a phase already in progress).
   useEffect(() => {
     if (!autoRun || !currentExercise) return;
     if (currentExercise.id === autoStartedForRef.current) return;
     if (phase !== 'idle' && phase !== 'done') return;
     autoStartedForRef.current = currentExercise.id;
     autoCompletedForRef.current = null;
-    start();
+    if (autoFirstDoneRef.current) {
+      beginWorkDirectly();
+    } else {
+      autoFirstDoneRef.current = true;
+      start();
+    }
     // eslint-disable-next-line
   }, [autoRun, currentExercise && currentExercise.id, phase]);
 
@@ -668,6 +683,28 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     clearInterval(intervalRef.current);
     intervalRef.current = setInterval(tick, 200);
     ensureAudio();
+    updateMediaSession();
+    forceRender();
+  }
+
+  // Used only by Auto mode's exercise-to-exercise handoff: goes straight
+  // into round 1's work phase, skipping the 3-2-1 countdown. The rest
+  // period at the end of the previous exercise already served as the
+  // transition buffer, so a second "get ready" pause would just be extra
+  // dead time in an otherwise hands-free run. Only the very first exercise
+  // of an Auto run still gets the full countdown (called via start()).
+  function beginWorkDirectly() {
+    if (phaseRef.current !== 'idle' && phaseRef.current !== 'done') return;
+    phaseRef.current = 'work';
+    roundRef.current = 1;
+    phaseTotalRef.current = effectiveRef.current.workSec;
+    remainingRef.current = effectiveRef.current.workSec;
+    phaseEndAtRef.current = Date.now() + effectiveRef.current.workSec * 1000;
+    runningRef.current = true;
+    clearInterval(intervalRef.current);
+    intervalRef.current = setInterval(tick, 200);
+    ensureAudio();
+    playChime('work');
     updateMediaSession();
     forceRender();
   }
