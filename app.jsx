@@ -489,13 +489,19 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   }
 
   // Fires once, right as the countdown hits zero and work actually begins.
-  // Deliberately built differently from the tick/chime family — a single
-  // clean, lower, sine-based tone (closer to a hospital heart-monitor beep)
-  // held twice as long as a tick — so the "go" moment is unmistakable.
+  // Deliberately built differently from the tick/chime family — a clean,
+  // lower, sine-based tone (closer to a hospital heart-monitor beep) held
+  // twice as long as a tick — so the "go" moment is unmistakable. Driven at
+  // 3x the gain used everywhere else (the compressor absorbs the extra
+  // headroom as loudness rather than clipping), plus a quieter octave-up
+  // layer so it still cuts through on small phone speakers, not just louder
+  // on paper.
   function playGoSignal() {
     const ctx = ensureAudio();
     if (!ctx) return;
-    playBeep(ctx, 900, ctx.currentTime, TICK_DURATION * 2, 1, 'sine', 4);
+    const t0 = ctx.currentTime;
+    playBeep(ctx, 900, t0, TICK_DURATION * 2, 3, 'sine', 4);
+    playBeep(ctx, 1800, t0, TICK_DURATION * 2, 1.4, 'sine', 4);
   }
 
   function finishRoundOrDone() {
