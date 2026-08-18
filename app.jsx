@@ -8,8 +8,12 @@ function uid(prefix) {
   return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
-function ex(name, description) {
-  return { id: uid('ex'), name, description };
+// sides: 'together' (both arms/legs work at once, e.g. a squat or bench
+// press) or 'alternating' (you work one side, then the other, e.g. a
+// one-arm row or reverse lunges) — drives which timing profile the Timer
+// auto-switches to when this exercise is the current one.
+function ex(name, description, sides = 'together') {
+  return { id: uid('ex'), name, description, sides };
 }
 
 // Maps each exercise name to its old Hebrew cue and new English cue, so we
@@ -34,6 +38,16 @@ const LEGACY_DESCRIPTION_TO_ENGLISH = Object.fromEntries(
   Object.values(EXERCISE_DESCRIPTIONS).map(([legacy, english]) => [legacy, english])
 );
 
+// Best-effort default `sides` for the seeded exercise names, used only to
+// backfill installs saved before that field existed (see migrateState) —
+// exercises the user has actually set (or created themselves) always keep
+// their real value.
+const DEFAULT_SIDES_BY_NAME = {
+  'One-Arm Dumbbell Row': 'alternating',
+  'Dumbbell Reverse Lunges': 'alternating',
+  'Side Plank Dips': 'alternating',
+};
+
 function defaultWorkouts() {
   return [
     {
@@ -54,10 +68,10 @@ function defaultWorkouts() {
       exercises: [
         ex('Goblet Squat', EXERCISE_DESCRIPTIONS['Goblet Squat'][1]),
         ex('Incline Dumbbell Press', EXERCISE_DESCRIPTIONS['Incline Dumbbell Press'][1]),
-        ex('One-Arm Dumbbell Row', EXERCISE_DESCRIPTIONS['One-Arm Dumbbell Row'][1]),
-        ex('Dumbbell Reverse Lunges', EXERCISE_DESCRIPTIONS['Dumbbell Reverse Lunges'][1]),
+        ex('One-Arm Dumbbell Row', EXERCISE_DESCRIPTIONS['One-Arm Dumbbell Row'][1], 'alternating'),
+        ex('Dumbbell Reverse Lunges', EXERCISE_DESCRIPTIONS['Dumbbell Reverse Lunges'][1], 'alternating'),
         ex('Tricep Pushdown', EXERCISE_DESCRIPTIONS['Tricep Pushdown'][1]),
-        ex('Side Plank Dips', EXERCISE_DESCRIPTIONS['Side Plank Dips'][1]),
+        ex('Side Plank Dips', EXERCISE_DESCRIPTIONS['Side Plank Dips'][1], 'alternating'),
       ],
     },
   ];
@@ -65,7 +79,11 @@ function defaultWorkouts() {
 
 function defaultCategories() {
   return [
-    { id: 'cat-weights', name: 'Weight Press', icon: 'dumbbell', workSec: 80, restSec: 30, rounds: 3 },
+    // altWorkSec/altRestSec are the timing used when the current exercise is
+    // tagged 'alternating' (one side at a time needs longer work, shorter
+    // rest than a 'together' exercise). Left unset on Ab Time/Walking, so
+    // those two behave exactly as before — nothing there ever changes.
+    { id: 'cat-weights', name: 'Weight Press', icon: 'dumbbell', workSec: 80, restSec: 30, rounds: 3, altWorkSec: 105, altRestSec: 20 },
     { id: 'cat-abs', name: 'Ab Time', icon: 'activity', workSec: 40, restSec: 20, rounds: 4 },
     { id: 'cat-walk', name: 'Walking', icon: 'footprints', workSec: 300, restSec: 60, rounds: 2 },
   ];
@@ -80,6 +98,7 @@ function defaultState() {
     workoutProgress: {},
     activeWorkoutId: workouts[0].id,
     soundEnabled: true,
+    currentExerciseOverride: {},
   };
 }
 
@@ -98,17 +117,28 @@ function loadRawState() {
 function migrateState(loaded) {
   const state = loaded ? { ...loaded } : defaultState();
   if (!state.categories || state.categories.length === 0) state.categories = defaultCategories();
+  // Backfill alternating-sides timing onto the default Weight Press category
+  // for installs saved before that field existed — any other category is
+  // left alone, since alt timing is opt-in (configured in the Categories tab).
+  state.categories = state.categories.map(c =>
+    (c.id === 'cat-weights' && c.altWorkSec == null) ? { ...c, altWorkSec: 105, altRestSec: 20 } : c
+  );
   if (!state.categories.find(c => c.id === state.selectedCategoryId)) {
     state.selectedCategoryId = state.categories[0].id;
   }
   if (!state.workouts || state.workouts.length === 0) state.workouts = defaultWorkouts();
   // Translate any leftover Hebrew exercise cues from earlier versions of
   // this app into English, without touching text the user typed themselves.
+  // Also backfill `sides` on exercises saved before that field existed.
   state.workouts = state.workouts.map(w => ({
     ...w,
     exercises: w.exercises.map(e => {
       const translated = LEGACY_DESCRIPTION_TO_ENGLISH[e.description];
-      return translated ? { ...e, description: translated } : e;
+      // Only ever backfill when the field is truly absent (pre-migration
+      // data) — once `sides` exists, it's the user's real choice and is
+      // never second-guessed by name again.
+      const sides = e.sides == null ? (DEFAULT_SIDES_BY_NAME[e.name] || 'together') : e.sides;
+      return { ...e, description: translated || e.description, sides };
     }),
   }));
   if (!state.workoutProgress) state.workoutProgress = {};
@@ -116,6 +146,7 @@ function migrateState(loaded) {
     state.activeWorkoutId = state.workouts[0].id;
   }
   if (typeof state.soundEnabled !== 'boolean') state.soundEnabled = true;
+  if (!state.currentExerciseOverride) state.currentExerciseOverride = {};
   return state;
 }
 
@@ -335,7 +366,7 @@ function TimeRow({ label, sec, onCommit }) {
 const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' };
 const COUNTDOWN_SEC = 3;
 
-function TimerTab({ category, categories, onSelectCategory, soundEnabled, onToggleSound }) {
+function TimerTab({ category, categories, onSelectCategory, soundEnabled, onToggleSound, currentExercise }) {
   const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
   const remainingRef = useRef(category.workSec);
@@ -347,23 +378,38 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const compressorRef = useRef(null);
   const audioElRef = useRef(null);
   const wakeLockRef = useRef(null);
+  const effectiveRef = useRef({ workSec: category.workSec, restSec: category.restSec });
   const [, forceRender] = useReducer(x => x + 1, 0);
+
+  // The current exercise can change mid-phase (e.g. you tap a different
+  // exercise on the checklist while resting) — that must NOT interrupt a
+  // running phase. So this is just a plain assignment on every render (not a
+  // useEffect), and every phase-transition function below reads from this
+  // ref at the moment it fires rather than closing over `category` directly.
+  // That means: a running phase always finishes with whatever timing it
+  // started with, and only the *next* phase transition picks up the newly
+  // current exercise's timing.
+  const usingAlt = !!(currentExercise && currentExercise.sides === 'alternating' && category.altWorkSec != null && category.altRestSec != null);
+  effectiveRef.current = {
+    workSec: usingAlt ? category.altWorkSec : category.workSec,
+    restSec: usingAlt ? category.altRestSec : category.restSec,
+  };
 
   useEffect(() => {
     clearInterval(intervalRef.current);
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
-    phaseTotalRef.current = category.workSec;
-    remainingRef.current = category.workSec;
+    phaseTotalRef.current = effectiveRef.current.workSec;
+    remainingRef.current = effectiveRef.current.workSec;
     forceRender();
     return () => clearInterval(intervalRef.current);
   }, [category.id, category.workSec, category.restSec, category.rounds]);
 
   const phase = phaseRef.current;
   const round = roundRef.current;
-  const remaining = remainingRef.current;
-  const total = phaseTotalRef.current;
+  const remaining = phase === 'idle' ? effectiveRef.current.workSec : remainingRef.current;
+  const total = phase === 'idle' ? effectiveRef.current.workSec : phaseTotalRef.current;
   const running = runningRef.current;
 
   async function acquireWakeLock() {
@@ -518,21 +564,21 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       playChime('work');
       roundRef.current += 1;
       phaseRef.current = 'work';
-      phaseTotalRef.current = category.workSec;
-      remainingRef.current = category.workSec;
-      phaseEndAtRef.current = Date.now() + category.workSec * 1000;
+      phaseTotalRef.current = effectiveRef.current.workSec;
+      remainingRef.current = effectiveRef.current.workSec;
+      phaseEndAtRef.current = Date.now() + effectiveRef.current.workSec * 1000;
     }
     updateMediaSession();
   }
 
   function advancePhase() {
     if (phaseRef.current === 'work') {
-      if (category.restSec > 0) {
+      if (effectiveRef.current.restSec > 0) {
         playChime('rest');
         phaseRef.current = 'rest';
-        phaseTotalRef.current = category.restSec;
-        remainingRef.current = category.restSec;
-        phaseEndAtRef.current = Date.now() + category.restSec * 1000;
+        phaseTotalRef.current = effectiveRef.current.restSec;
+        remainingRef.current = effectiveRef.current.restSec;
+        phaseEndAtRef.current = Date.now() + effectiveRef.current.restSec * 1000;
         updateMediaSession();
       } else {
         finishRoundOrDone();
@@ -552,9 +598,9 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
           playTick(n);
         } else {
           phaseRef.current = 'work';
-          phaseTotalRef.current = category.workSec;
-          remainingRef.current = category.workSec;
-          phaseEndAtRef.current = now + category.workSec * 1000;
+          phaseTotalRef.current = effectiveRef.current.workSec;
+          remainingRef.current = effectiveRef.current.workSec;
+          phaseEndAtRef.current = now + effectiveRef.current.workSec * 1000;
           playGoSignal();
           updateMediaSession();
         }
@@ -605,8 +651,8 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
-    phaseTotalRef.current = category.workSec;
-    remainingRef.current = category.workSec;
+    phaseTotalRef.current = effectiveRef.current.workSec;
+    remainingRef.current = effectiveRef.current.workSec;
     updateMediaSession();
     forceRender();
   }
@@ -616,9 +662,9 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     clearInterval(intervalRef.current);
     if (phaseRef.current === 'countdown') {
       phaseRef.current = 'work';
-      phaseTotalRef.current = category.workSec;
-      remainingRef.current = category.workSec;
-      phaseEndAtRef.current = Date.now() + category.workSec * 1000;
+      phaseTotalRef.current = effectiveRef.current.workSec;
+      remainingRef.current = effectiveRef.current.workSec;
+      phaseEndAtRef.current = Date.now() + effectiveRef.current.workSec * 1000;
       playGoSignal();
     } else {
       advancePhase();
@@ -636,13 +682,15 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   function nextUpLabel() {
     const isLastRound = round >= category.rounds;
     if (phase === 'work') {
-      if (category.restSec > 0) return `Next · Rest ${fmtTime(category.restSec)}`;
-      return isLastRound ? 'Last interval' : `Next · Work ${fmtTime(category.workSec)}`;
+      if (effectiveRef.current.restSec > 0) return `Next · Rest ${fmtTime(effectiveRef.current.restSec)}`;
+      return isLastRound ? 'Last interval' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
     }
-    if (phase === 'rest') return isLastRound ? 'Almost there' : `Next · Work ${fmtTime(category.workSec)}`;
-    if (phase === 'idle') return `Starts with Work ${fmtTime(category.workSec)}`;
+    if (phase === 'rest') return isLastRound ? 'Almost there' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
+    if (phase === 'idle') return `Starts with Work ${fmtTime(effectiveRef.current.workSec)}`;
     return '';
   }
+
+  const showExerciseLink = !!(currentExercise && category.altWorkSec != null && category.altRestSec != null);
 
   return (
     <div className="flex flex-col gap-5">
@@ -663,18 +711,24 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       <div className="flex items-center justify-center gap-2 flex-wrap">
         <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
           <span className="text-[11px] text-iossecondary font-medium">Work</span>
-          <span className="text-[13px] font-semibold tabular-nums">{fmtTime(category.workSec)}</span>
+          <span className="text-[13px] font-semibold tabular-nums">{fmtTime(effectiveRef.current.workSec)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
           <span className="text-[11px] text-iossecondary font-medium">Rest</span>
-          <span className="text-[13px] font-semibold tabular-nums">{fmtTime(category.restSec)}</span>
+          <span className="text-[13px] font-semibold tabular-nums">{fmtTime(effectiveRef.current.restSec)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
           <span className="text-[11px] text-iossecondary font-medium">Rounds</span>
           <span className="text-[13px] font-semibold tabular-nums">{category.rounds}</span>
         </div>
       </div>
-      <div className="text-center text-[11px] text-iossecondary -mt-4">Edit times in the Categories tab</div>
+      {showExerciseLink ? (
+        <div className="text-center text-[12px] text-iosblue font-medium -mt-4">
+          Now: {currentExercise.name} · {currentExercise.sides === 'alternating' ? 'One side at a time' : 'Both sides together'}
+        </div>
+      ) : (
+        <div className="text-center text-[11px] text-iossecondary -mt-4">Edit times in the Categories tab</div>
+      )}
 
       <div className="flex flex-col items-center justify-center py-2 relative">
         <div className="relative w-[260px] h-[260px]">
@@ -768,6 +822,23 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
                   className="w-12 text-center bg-white rounded-md py-0.5 text-[16px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
               </div>
             </div>
+
+            <div className="mt-3 pt-3 border-t border-iosseparator">
+              <label className="flex items-center justify-between gap-2 text-[13px] font-medium text-iossecondary">
+                <span>Different timing for one-side-at-a-time exercises</span>
+                <input type="checkbox" checked={cat.altWorkSec != null && cat.altRestSec != null}
+                  onChange={e => onUpdateCategory(cat.id, e.target.checked
+                    ? { altWorkSec: cat.workSec, altRestSec: cat.restSec }
+                    : { altWorkSec: null, altRestSec: null })}
+                  className="w-5 h-5 accent-iosblue shrink-0" />
+              </label>
+              {cat.altWorkSec != null && cat.altRestSec != null && (
+                <div className="grid grid-cols-2 gap-2 mt-2">
+                  <TimeRow label="Alt Work" sec={cat.altWorkSec} onCommit={v => onUpdateCategory(cat.id, { altWorkSec: v })} />
+                  <TimeRow label="Alt Rest" sec={cat.altRestSec} onCommit={v => onUpdateCategory(cat.id, { altRestSec: v })} />
+                </div>
+              )}
+            </div>
           </Card>
         ))}
       </div>
@@ -789,6 +860,11 @@ function ExerciseEditRow({ exercise, onChange, onDelete }) {
       <input value={exercise.description} placeholder="How to identify (optional)"
         onChange={e => onChange({ ...exercise, description: e.target.value })}
         className="text-[16px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue text-iossecondary" />
+      <SegmentedControl
+        options={[{ value: 'together', label: 'Both sides together' }, { value: 'alternating', label: 'One side at a time' }]}
+        value={exercise.sides === 'alternating' ? 'alternating' : 'together'}
+        onChange={sides => onChange({ ...exercise, sides })}
+      />
     </div>
   );
 }
@@ -908,15 +984,56 @@ function CheckCircle({ checked }) {
   );
 }
 
-function ExerciseCard({ exercise, checked, onToggle }) {
+// Three distinct gestures on one card: tap the checkbox to mark done, tap
+// the rest of the card to set it as the "current" exercise (what the Timer
+// adapts its timing to), long-press the card to enter reorder mode.
+function ExerciseCard({ exercise, checked, isCurrent, onToggle, onSetCurrent, onLongPress }) {
+  const pressTimer = useRef(null);
+  const longPressFired = useRef(false);
+  const startPos = useRef({ x: 0, y: 0 });
+
+  function clearPressTimer() {
+    clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  }
+  function handlePointerDown(e) {
+    longPressFired.current = false;
+    startPos.current = { x: e.clientX, y: e.clientY };
+    pressTimer.current = setTimeout(() => {
+      longPressFired.current = true;
+      onLongPress();
+    }, 500);
+  }
+  function handlePointerMove(e) {
+    if (!pressTimer.current) return;
+    const dx = e.clientX - startPos.current.x;
+    const dy = e.clientY - startPos.current.y;
+    if (Math.hypot(dx, dy) > 10) clearPressTimer();
+  }
+  function handleBodyClick() {
+    if (longPressFired.current) { longPressFired.current = false; return; } // swallow the click that follows a long-press
+    onSetCurrent();
+  }
+
   return (
-    <Card className="overflow-hidden">
-      <div role="button" tabIndex={0} onClick={onToggle}
-        onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onToggle(); } }}
-        className={`w-full flex items-center gap-3 px-4 py-3.5 cursor-pointer active:bg-iosbg transition-colors ${checked ? 'opacity-50' : ''}`}>
-        <CheckCircle checked={checked} />
-        <div className="flex-1 min-w-0 text-left">
-          <div className={`font-semibold text-[15px] ${checked ? 'line-through text-iossecondary' : ''}`}>{exercise.name}</div>
+    <Card className={`overflow-hidden ${isCurrent ? 'ring-2 ring-iosblue' : ''}`}>
+      <div className={`w-full flex items-center gap-3 px-4 py-3.5 transition-colors ${checked ? 'opacity-50' : ''}`}>
+        <button onClick={onToggle} aria-label={checked ? 'Mark not done' : 'Mark done'} className="shrink-0">
+          <CheckCircle checked={checked} />
+        </button>
+        <div role="button" tabIndex={0}
+          onClick={handleBodyClick}
+          onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSetCurrent(); } }}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={clearPressTimer}
+          onPointerCancel={clearPressTimer}
+          onPointerLeave={clearPressTimer}
+          className="flex-1 min-w-0 text-left cursor-pointer select-none active:bg-iosbg -my-3.5 -mr-4 py-3.5 pr-4 rounded-r-2xl transition-colors">
+          <div className="flex items-center gap-1.5">
+            {isCurrent && <span className="text-iosblue text-[10px] font-bold uppercase tracking-wide">Now</span>}
+            <div className={`font-semibold text-[15px] ${checked ? 'line-through text-iossecondary' : ''}`}>{exercise.name}</div>
+          </div>
           {exercise.description && <div className="text-[13px] text-iossecondary mt-0.5">{exercise.description}</div>}
         </div>
       </div>
@@ -924,9 +1041,63 @@ function ExerciseCard({ exercise, checked, onToggle }) {
   );
 }
 
-function WorkoutRunView({ workout, progress, onToggleExercise, onResetProgress, onSwitchWorkout, workouts, onManage }) {
+function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, onSetCurrentExercise, onResetProgress,
+  onSwitchWorkout, workouts, onManage, onSaveWorkout }) {
   const doneCount = workout.exercises.filter(e => progress[e.id]).length;
   const total = workout.exercises.length;
+  const [reorderList, setReorderList] = useState(null); // non-null = reorder mode is active
+  const sortableContainerRef = useRef(null);
+  const sortableInstanceRef = useRef(null);
+
+  useEffect(() => {
+    if (!reorderList || !sortableContainerRef.current || typeof Sortable === 'undefined') return;
+    sortableInstanceRef.current = Sortable.create(sortableContainerRef.current, {
+      animation: 150,
+      onEnd: (evt) => {
+        setReorderList(prev => {
+          if (!prev || evt.oldIndex === evt.newIndex) return prev;
+          const next = prev.slice();
+          const [moved] = next.splice(evt.oldIndex, 1);
+          next.splice(evt.newIndex, 0, moved);
+          return next;
+        });
+      },
+    });
+    return () => { if (sortableInstanceRef.current) { sortableInstanceRef.current.destroy(); sortableInstanceRef.current = null; } };
+    // eslint-disable-next-line
+  }, [!!reorderList]);
+
+  function confirmReorder() {
+    onSaveWorkout({ ...workout, exercises: reorderList });
+    setReorderList(null);
+  }
+
+  if (reorderList) {
+    return (
+      <div className="flex flex-col gap-4">
+        <div className="flex items-center justify-between">
+          <h1 className="text-[28px] font-bold">Reorder</h1>
+          <IconButton onClick={confirmReorder} className="bg-iosblue text-white" title="Done reordering">
+            <CheckIcon className="w-5 h-5" />
+          </IconButton>
+        </div>
+        <div className="text-center text-[13px] text-iossecondary -mt-2">Drag exercises into the order you do them</div>
+        <div ref={sortableContainerRef} className="flex flex-col gap-2.5">
+          {reorderList.map(exr => (
+            <div key={exr.id}
+              className="flex items-center gap-3 bg-ioscard rounded-2xl px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.04)] cursor-grab active:cursor-grabbing">
+              <span className="text-iossecondary text-[18px] leading-none select-none" aria-hidden="true">⠿</span>
+              <div className="flex-1 min-w-0 font-semibold text-[15px]">{exr.name}</div>
+            </div>
+          ))}
+        </div>
+        <button onClick={confirmReorder}
+          className="w-full py-3.5 rounded-2xl bg-iosblue text-white font-semibold text-[16px] flex items-center justify-center gap-2">
+          <CheckIcon className="w-5 h-5" /> Done Reordering
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -945,12 +1116,15 @@ function WorkoutRunView({ workout, progress, onToggleExercise, onResetProgress, 
         <div className="text-center text-[15px] font-semibold text-iosblue">{workout.name}</div>
       )}
 
-      <div className="text-center text-[13px] text-iossecondary -mt-1">{doneCount} of {total} done</div>
+      <div className="text-center text-[13px] text-iossecondary -mt-1">{doneCount} of {total} done · long-press to reorder</div>
 
       <div className="flex flex-col gap-2.5">
         {workout.exercises.map(exr => (
           <ExerciseCard key={exr.id} exercise={exr} checked={!!progress[exr.id]}
-            onToggle={() => onToggleExercise(exr.id, !progress[exr.id])} />
+            isCurrent={!!currentExercise && currentExercise.id === exr.id}
+            onToggle={() => onToggleExercise(exr.id, !progress[exr.id])}
+            onSetCurrent={() => onSetCurrentExercise(exr.id)}
+            onLongPress={() => setReorderList(workout.exercises.map(e => ({ ...e })))} />
         ))}
       </div>
 
@@ -961,8 +1135,8 @@ function WorkoutRunView({ workout, progress, onToggleExercise, onResetProgress, 
   );
 }
 
-function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, onToggleExercise, onResetProgress, onSetActiveWorkout,
-  onSaveWorkout, onDeleteWorkout }) {
+function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExercise, onToggleExercise, onResetProgress, onSetActiveWorkout,
+  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise }) {
   const [view, setView] = useState('run'); // run | manage | edit
   const [editingId, setEditingId] = useState(null);
 
@@ -1010,11 +1184,14 @@ function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, onToggleExerc
     <WorkoutRunView
       workout={activeWorkout}
       progress={workoutProgress[activeWorkout.id] || {}}
+      currentExercise={currentExercise}
       onToggleExercise={(exId, checked) => onToggleExercise(activeWorkout.id, exId, checked)}
+      onSetCurrentExercise={(exId) => onSetCurrentExercise(activeWorkout.id, exId)}
       onResetProgress={() => { if (confirm(`Reset all checkmarks for "${activeWorkout.name}"?`)) onResetProgress(activeWorkout.id); }}
       onSwitchWorkout={onSetActiveWorkout}
       workouts={workouts}
       onManage={() => setView('manage')}
+      onSaveWorkout={onSaveWorkout}
     />
   );
 }
@@ -1032,6 +1209,35 @@ function App() {
   const [celebration, setCelebration] = useState(null);
 
   const selectedCategory = state.categories.find(c => c.id === state.selectedCategoryId) || state.categories[0];
+
+  // The exercise the Timer should adapt its timing to: a manual override (if
+  // still unchecked) takes priority, otherwise it's simply the first
+  // unchecked exercise in the active workout — so it advances on its own as
+  // you check things off, with zero extra taps.
+  function getCurrentExercise(workoutId) {
+    const workout = state.workouts.find(w => w.id === workoutId);
+    if (!workout) return null;
+    const progress = state.workoutProgress[workoutId] || {};
+    const overrideId = state.currentExerciseOverride[workoutId];
+    if (overrideId) {
+      const overrideEx = workout.exercises.find(e => e.id === overrideId);
+      if (overrideEx && !progress[overrideEx.id]) return overrideEx;
+    }
+    return workout.exercises.find(e => !progress[e.id]) || null;
+  }
+  const currentExercise = getCurrentExercise(state.activeWorkoutId);
+
+  function setCurrentExercise(workoutId, exerciseId) {
+    setState(s => ({ ...s, currentExerciseOverride: { ...s.currentExerciseOverride, [workoutId]: exerciseId } }));
+  }
+  function clearCurrentExerciseOverride(workoutId) {
+    setState(s => {
+      if (!(workoutId in s.currentExerciseOverride)) return s;
+      const currentExerciseOverride = { ...s.currentExerciseOverride };
+      delete currentExerciseOverride[workoutId];
+      return { ...s, currentExerciseOverride };
+    });
+  }
 
   function updateCategory(id, patch) {
     setState(s => ({ ...s, categories: s.categories.map(c => c.id === id ? { ...c, ...patch } : c) }));
@@ -1062,18 +1268,27 @@ function App() {
       const workout = s.workouts.find(w => w.id === workoutId);
       const nextProgress = { ...(s.workoutProgress[workoutId] || {}), [exerciseId]: checked };
       const allDone = workout.exercises.every(e => nextProgress[e.id]);
-      const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress } };
+      const currentExerciseOverride = { ...s.currentExerciseOverride };
+      // Checking off the exercise that was manually set as "current" clears
+      // the override, so the next unchecked exercise takes over automatically.
+      if (checked && currentExerciseOverride[workoutId] === exerciseId) delete currentExerciseOverride[workoutId];
+      const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress }, currentExerciseOverride };
 
       if (checked && allDone) {
         const idx = s.workouts.findIndex(w => w.id === workoutId);
         const nextWorkout = s.workouts.length > 1 ? s.workouts[(idx + 1) % s.workouts.length] : null;
         celebrate(workout.name, nextWorkout ? nextWorkout.name : null);
         setTimeout(() => {
-          setState(s2 => ({
-            ...s2,
-            workoutProgress: { ...s2.workoutProgress, [workoutId]: {} },
-            activeWorkoutId: nextWorkout ? nextWorkout.id : s2.activeWorkoutId,
-          }));
+          setState(s2 => {
+            const override2 = { ...s2.currentExerciseOverride };
+            delete override2[workoutId];
+            return {
+              ...s2,
+              workoutProgress: { ...s2.workoutProgress, [workoutId]: {} },
+              activeWorkoutId: nextWorkout ? nextWorkout.id : s2.activeWorkoutId,
+              currentExerciseOverride: override2,
+            };
+          });
           setCelebration(null);
         }, 2200);
       }
@@ -1082,7 +1297,11 @@ function App() {
   }
 
   function resetProgress(workoutId) {
-    setState(s => ({ ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: {} } }));
+    setState(s => {
+      const currentExerciseOverride = { ...s.currentExerciseOverride };
+      delete currentExerciseOverride[workoutId];
+      return { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: {} }, currentExerciseOverride };
+    });
   }
 
   function setActiveWorkout(id) {
@@ -1102,8 +1321,10 @@ function App() {
       const workouts = s.workouts.filter(w => w.id !== id);
       const workoutProgress = { ...s.workoutProgress };
       delete workoutProgress[id];
+      const currentExerciseOverride = { ...s.currentExerciseOverride };
+      delete currentExerciseOverride[id];
       const activeWorkoutId = s.activeWorkoutId === id ? (workouts[0] ? workouts[0].id : null) : s.activeWorkoutId;
-      return { ...s, workouts, workoutProgress, activeWorkoutId };
+      return { ...s, workouts, workoutProgress, currentExerciseOverride, activeWorkoutId };
     });
   }
 
@@ -1124,6 +1345,7 @@ function App() {
           onSelectCategory={id => setState(s => ({ ...s, selectedCategoryId: id }))}
           soundEnabled={state.soundEnabled}
           onToggleSound={() => setState(s => ({ ...s, soundEnabled: !s.soundEnabled }))}
+          currentExercise={currentExercise}
         />
       </div>
 
@@ -1144,11 +1366,13 @@ function App() {
           workouts={state.workouts}
           workoutProgress={state.workoutProgress}
           activeWorkoutId={state.activeWorkoutId}
+          currentExercise={currentExercise}
           onToggleExercise={toggleExercise}
           onResetProgress={resetProgress}
           onSetActiveWorkout={setActiveWorkout}
           onSaveWorkout={saveWorkout}
           onDeleteWorkout={deleteWorkout}
+          onSetCurrentExercise={setCurrentExercise}
         />
       </div>
 
