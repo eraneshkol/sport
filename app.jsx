@@ -432,84 +432,70 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     return audioCtxRef.current;
   }
 
-  // Sawtooth lead + sub-octave square "thump" reads as a hard sports-buzzer
-  // rather than a soft bell — a near-instant attack (not a gentle swell)
-  // is what makes it feel punchy/loud instead of pleasant.
-  function playTone(ctx, freq, startTime, duration, volume = 0.95) {
+  // Every sound in the app is built from this one block: two oscillators of
+  // the same waveform, a few Hz apart, both with a near-instant attack. The
+  // slight detuning creates an audible "beating" edge — the same trick
+  // sports watches and alarms use to make a tone impossible to tune out —
+  // and reusing one engine everywhere is what keeps the very different
+  // sounds below (a piercing countdown tick, a clean medical-monitor beep,
+  // high alert chimes, a low buzzer) feeling like one consistent voice
+  // instead of unrelated noises bolted together.
+  function playBeep(ctx, freq, startTime, duration, volume = 1, type = 'square', detuneHz = 8) {
     const dest = compressorRef.current;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'sawtooth';
-    osc.frequency.value = freq;
-    gain.gain.setValueAtTime(0, startTime);
-    gain.gain.linearRampToValueAtTime(volume, startTime + 0.004);
-    gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
-    osc.connect(gain);
-    gain.connect(dest);
-    osc.start(startTime);
-    osc.stop(startTime + duration + 0.05);
-
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.type = 'square';
-    osc2.frequency.value = freq / 2;
-    gain2.gain.setValueAtTime(0, startTime);
-    gain2.gain.linearRampToValueAtTime(volume * 0.55, startTime + 0.004);
-    gain2.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
-    osc2.connect(gain2);
-    gain2.connect(dest);
-    osc2.start(startTime);
-    osc2.stop(startTime + duration + 0.05);
+    [freq, freq + detuneHz].forEach((f, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = type;
+      osc.frequency.value = f;
+      const v = i === 0 ? volume : volume * 0.75;
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(v, startTime + 0.003);
+      gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+      osc.connect(gain);
+      gain.connect(dest);
+      osc.start(startTime);
+      osc.stop(startTime + duration + 0.05);
+    });
   }
+
+  const TICK_DURATION = 0.10;
 
   function playChime(type) {
     const ctx = ensureAudio();
     if (!ctx) return;
     const t0 = ctx.currentTime;
     if (type === 'rest') {
-      playTone(ctx, 880, t0, 0.22, 1);
-      playTone(ctx, 587, t0 + 0.16, 0.30, 1);
+      // Descending pair, same high "sports watch" register as the ticks.
+      playBeep(ctx, 2349, t0, 0.11, 1, 'square', 8);
+      playBeep(ctx, 1760, t0 + 0.14, 0.15, 1, 'square', 8);
     } else if (type === 'work') {
-      playTone(ctx, 587, t0, 0.22, 1);
-      playTone(ctx, 880, t0 + 0.16, 0.30, 1);
+      // Ascending pair — mirror image of 'rest' so the two are easy to tell apart by ear.
+      playBeep(ctx, 1760, t0, 0.11, 1, 'square', 8);
+      playBeep(ctx, 2349, t0 + 0.14, 0.15, 1, 'square', 8);
     } else if (type === 'finish') {
-      // Boxing-round-buzzer style: one sustained low blast, then two sharp accents.
-      playTone(ctx, 196, t0, 0.7, 1);
-      playTone(ctx, 784, t0 + 0.75, 0.16, 1);
-      playTone(ctx, 784, t0 + 0.95, 0.22, 1);
+      // A real buzzer, not a melodic jingle: low, sustained, harshly detuned
+      // for a beating "buzz" texture, fired as two short blasts.
+      playBeep(ctx, 220, t0, 0.42, 1, 'square', 14);
+      playBeep(ctx, 220, t0 + 0.48, 0.55, 1, 'square', 14);
     }
   }
 
-  // Sharp, percussive movie-clock-style tick, deliberately distinct in timbre
-  // from the chimes above so it reads as "counting down" rather than a phase change.
+  // Sharp, piercing, high-pitched countdown tick — deliberately far higher
+  // than the chimes below so it reads unmistakably as "counting down."
   function playTick(n) {
     const ctx = ensureAudio();
     if (!ctx) return;
-    const t0 = ctx.currentTime;
-    const dest = compressorRef.current;
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.type = 'square';
-    osc.frequency.value = 1000;
-    gain.gain.setValueAtTime(0, t0);
-    gain.gain.linearRampToValueAtTime(1, t0 + 0.004);
-    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
-    osc.connect(gain);
-    gain.connect(dest);
-    osc.start(t0);
-    osc.stop(t0 + 0.16);
+    playBeep(ctx, 2637, ctx.currentTime, TICK_DURATION, 1, 'square', 10);
+  }
 
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.type = 'square';
-    osc2.frequency.value = 500;
-    gain2.gain.setValueAtTime(0, t0);
-    gain2.gain.linearRampToValueAtTime(0.5, t0 + 0.004);
-    gain2.gain.exponentialRampToValueAtTime(0.001, t0 + 0.12);
-    osc2.connect(gain2);
-    gain2.connect(dest);
-    osc2.start(t0);
-    osc2.stop(t0 + 0.16);
+  // Fires once, right as the countdown hits zero and work actually begins.
+  // Deliberately built differently from the tick/chime family — a single
+  // clean, lower, sine-based tone (closer to a hospital heart-monitor beep)
+  // held twice as long as a tick — so the "go" moment is unmistakable.
+  function playGoSignal() {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    playBeep(ctx, 900, ctx.currentTime, TICK_DURATION * 2, 1, 'sine', 4);
   }
 
   function finishRoundOrDone() {
@@ -560,6 +546,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
           phaseTotalRef.current = category.workSec;
           remainingRef.current = category.workSec;
           phaseEndAtRef.current = now + category.workSec * 1000;
+          playGoSignal();
           updateMediaSession();
         }
       }
@@ -623,6 +610,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       phaseTotalRef.current = category.workSec;
       remainingRef.current = category.workSec;
       phaseEndAtRef.current = Date.now() + category.workSec * 1000;
+      playGoSignal();
     } else {
       advancePhase();
     }
