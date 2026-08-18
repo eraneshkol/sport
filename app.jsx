@@ -210,19 +210,6 @@ function CompletionOverlay({ celebration }) {
   );
 }
 
-function CountdownOverlay({ value }) {
-  if (!value) return null;
-  return (
-    <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/55 backdrop-blur-[2px]">
-      <div key={value}
-        className="text-white font-bold leading-none tabular-nums animate-[countdownPulse_1s_cubic-bezier(0.22,1,0.36,1)]"
-        style={{ fontSize: '180px', textShadow: '0 0 40px rgba(0,0,0,0.5)' }}>
-        {value}
-      </div>
-    </div>
-  );
-}
-
 function Card({ children, className = '' }) {
   return (
     <div className={`bg-ioscard rounded-2xl shadow-[0_4px_20px_rgba(0,0,0,0.04)] ${className}`}>
@@ -345,8 +332,11 @@ function TimeRow({ label, sec, onCommit }) {
 
 // ===================== Timer Tab =====================
 
+const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' };
+const COUNTDOWN_SEC = 3;
+
 function TimerTab({ category, categories, onSelectCategory, soundEnabled, onToggleSound }) {
-  const phaseRef = useRef('idle'); // idle | work | rest | done
+  const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
   const remainingRef = useRef(category.workSec);
   const phaseTotalRef = useRef(category.workSec);
@@ -354,80 +344,149 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const runningRef = useRef(false);
   const intervalRef = useRef(null);
   const audioCtxRef = useRef(null);
-  const countdownRef = useRef(0); // 0 = not counting down, else 3/2/1
-  const countdownTimerRef = useRef(null);
+  const compressorRef = useRef(null);
+  const audioElRef = useRef(null);
+  const wakeLockRef = useRef(null);
   const [, forceRender] = useReducer(x => x + 1, 0);
 
   useEffect(() => {
     clearInterval(intervalRef.current);
-    clearInterval(countdownTimerRef.current);
-    countdownTimerRef.current = null;
-    countdownRef.current = 0;
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
     phaseTotalRef.current = category.workSec;
     remainingRef.current = category.workSec;
     forceRender();
-    return () => { clearInterval(intervalRef.current); clearInterval(countdownTimerRef.current); };
+    return () => clearInterval(intervalRef.current);
   }, [category.id, category.workSec, category.restSec, category.rounds]);
 
+  const phase = phaseRef.current;
+  const round = roundRef.current;
+  const remaining = remainingRef.current;
+  const total = phaseTotalRef.current;
+  const running = runningRef.current;
+
+  async function acquireWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try { wakeLockRef.current = await navigator.wakeLock.request('screen'); } catch (e) { /* not visible / unsupported */ }
+  }
+  function releaseWakeLock() {
+    if (wakeLockRef.current) { wakeLockRef.current.release().catch(() => {}); wakeLockRef.current = null; }
+  }
+  useEffect(() => {
+    if (running) acquireWakeLock(); else releaseWakeLock();
+  }, [running]);
+  useEffect(() => {
+    function onVisible() {
+      if (document.visibilityState === 'visible' && runningRef.current) acquireWakeLock();
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    return () => document.removeEventListener('visibilitychange', onVisible);
+  }, []);
+
+  function updateMediaSession() {
+    if (!('mediaSession' in navigator)) return;
+    try {
+      navigator.mediaSession.metadata = new MediaMetadata({
+        title: `${category.name} — ${PHASE_LABELS[phaseRef.current] || ''}`,
+        artist: `Round ${roundRef.current} of ${category.rounds}`,
+      });
+      navigator.mediaSession.playbackState = runningRef.current ? 'playing' : 'paused';
+    } catch (e) { /* unsupported */ }
+  }
+
+  // Keeps the tone pipeline routed through a real, continuously-playing <audio>
+  // element (via a MediaStream) instead of straight to ctx.destination, since
+  // mobile browsers are far more lenient about background execution/audio for
+  // tabs that are actively playing an <audio>/<video> element than for raw
+  // Web Audio oscillators, which are normally treated as "ambient" and can be
+  // throttled or silenced once the app is minimized.
   function ensureAudio() {
     if (!soundEnabled) return null;
     if (!audioCtxRef.current) {
-      audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const compressor = ctx.createDynamicsCompressor();
+      audioCtxRef.current = ctx;
+      compressorRef.current = compressor;
+      let streamed = false;
+      try {
+        if (ctx.createMediaStreamDestination) {
+          const dest = ctx.createMediaStreamDestination();
+          compressor.connect(dest);
+          if (!audioElRef.current) audioElRef.current = new Audio();
+          audioElRef.current.srcObject = dest.stream;
+          audioElRef.current.playsInline = true;
+          const p = audioElRef.current.play();
+          if (p && p.catch) p.catch(() => {});
+          streamed = true;
+        }
+      } catch (e) { /* fall back below */ }
+      if (!streamed) compressor.connect(ctx.destination);
+      try { if ('audioSession' in navigator) navigator.audioSession.type = 'playback'; } catch (e) {}
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
+    if (audioElRef.current && audioElRef.current.paused) {
+      const p = audioElRef.current.play();
+      if (p && p.catch) p.catch(() => {});
+    }
     return audioCtxRef.current;
   }
 
-  function playTone(ctx, freq, startTime, duration, volume = 0.25, type = 'sine') {
+  function playTone(ctx, freq, startTime, duration, volume = 0.85) {
+    const dest = compressorRef.current;
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
-    osc.type = type;
+    osc.type = 'triangle';
     osc.frequency.value = freq;
     gain.gain.setValueAtTime(0, startTime);
     gain.gain.linearRampToValueAtTime(volume, startTime + 0.02);
     gain.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
     osc.connect(gain);
-    gain.connect(ctx.destination);
+    gain.connect(dest);
     osc.start(startTime);
     osc.stop(startTime + duration + 0.05);
-  }
 
-  // Distinct, loud-but-not-harsh countdown beep: a low thump for weight
-  // (so it cuts through music/headphones) layered with a bright triangle
-  // ping for clarity, deliberately different from the work/rest chimes.
-  function playCountdownBeep() {
-    const ctx = ensureAudio();
-    if (!ctx) return;
-    const t0 = ctx.currentTime;
-    playTone(ctx, 220, t0, 0.16, 0.55, 'sine');
-    playTone(ctx, 1108, t0, 0.14, 0.4, 'triangle');
+    // Quieter octave-up layer for a richer, more cut-through timbre.
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = 'sine';
+    osc2.frequency.value = freq * 2;
+    gain2.gain.setValueAtTime(0, startTime);
+    gain2.gain.linearRampToValueAtTime(volume * 0.35, startTime + 0.02);
+    gain2.gain.exponentialRampToValueAtTime(0.001, startTime + duration);
+    osc2.connect(gain2);
+    gain2.connect(dest);
+    osc2.start(startTime);
+    osc2.stop(startTime + duration + 0.05);
   }
 
   function playChime(type) {
     const ctx = ensureAudio();
     if (!ctx) return;
     const t0 = ctx.currentTime;
-    // Every chime carries a low sine "thump" under the melody so it cuts
-    // through music/podcasts playing in headphones, plus triangle-wave
-    // tones (more present than plain sine) for the melodic part.
-    if (type === 'rest') {
-      playTone(ctx, 200, t0, 0.2, 0.4, 'sine');
-      playTone(ctx, 880, t0, 0.2, 0.45, 'triangle');
-      playTone(ctx, 587, t0 + 0.16, 0.24, 0.4, 'triangle');
-    } else if (type === 'work') {
-      playTone(ctx, 200, t0, 0.2, 0.4, 'sine');
-      playTone(ctx, 587, t0, 0.2, 0.45, 'triangle');
-      playTone(ctx, 880, t0 + 0.16, 0.24, 0.4, 'triangle');
-    } else if (type === 'finish') {
-      playTone(ctx, 260, t0, 0.22, 0.5, 'sine');
-      playTone(ctx, 659, t0, 0.2, 0.45, 'triangle');
-      playTone(ctx, 784, t0 + 0.16, 0.2, 0.45, 'triangle');
-      playTone(ctx, 260, t0 + 0.32, 0.45, 0.4, 'sine');
-      playTone(ctx, 988, t0 + 0.32, 0.45, 0.5, 'triangle');
-    }
+    if (type === 'rest') { playTone(ctx, 880, t0, 0.30); playTone(ctx, 587, t0 + 0.18, 0.36); }
+    else if (type === 'work') { playTone(ctx, 587, t0, 0.30); playTone(ctx, 880, t0 + 0.18, 0.36); }
+    else if (type === 'finish') { playTone(ctx, 659, t0, 0.28); playTone(ctx, 784, t0 + 0.20, 0.30); playTone(ctx, 988, t0 + 0.42, 0.55, 0.95); }
+  }
+
+  // Sharp, percussive movie-clock-style tick, deliberately distinct in timbre
+  // from the chimes above so it reads as "counting down" rather than a phase change.
+  function playTick(n) {
+    const ctx = ensureAudio();
+    if (!ctx) return;
+    const t0 = ctx.currentTime;
+    const dest = compressorRef.current;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.type = 'square';
+    osc.frequency.value = 1200;
+    gain.gain.setValueAtTime(0, t0);
+    gain.gain.linearRampToValueAtTime(0.95, t0 + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.001, t0 + 0.11);
+    osc.connect(gain);
+    gain.connect(dest);
+    osc.start(t0);
+    osc.stop(t0 + 0.15);
   }
 
   function finishRoundOrDone() {
@@ -445,6 +504,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       remainingRef.current = category.workSec;
       phaseEndAtRef.current = Date.now() + category.workSec * 1000;
     }
+    updateMediaSession();
   }
 
   function advancePhase() {
@@ -455,6 +515,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         phaseTotalRef.current = category.restSec;
         remainingRef.current = category.restSec;
         phaseEndAtRef.current = Date.now() + category.restSec * 1000;
+        updateMediaSession();
       } else {
         finishRoundOrDone();
       }
@@ -465,51 +526,42 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
 
   function tick() {
     const now = Date.now();
+    if (phaseRef.current === 'countdown') {
+      const n = Math.max(0, Math.round((phaseEndAtRef.current - now) / 1000));
+      if (n !== remainingRef.current) {
+        remainingRef.current = n;
+        if (n > 0) {
+          playTick(n);
+        } else {
+          phaseRef.current = 'work';
+          phaseTotalRef.current = category.workSec;
+          remainingRef.current = category.workSec;
+          phaseEndAtRef.current = now + category.workSec * 1000;
+          updateMediaSession();
+        }
+      }
+      forceRender();
+      return;
+    }
     remainingRef.current = Math.max(0, Math.round((phaseEndAtRef.current - now) / 1000));
     if (remainingRef.current <= 0) advancePhase();
     forceRender();
   }
 
-  function beginWork() {
-    phaseRef.current = 'work';
-    roundRef.current = 1;
-    phaseTotalRef.current = category.workSec;
-    remainingRef.current = category.workSec;
-    runningRef.current = true;
-    phaseEndAtRef.current = Date.now() + category.workSec * 1000;
-    clearInterval(intervalRef.current);
-    intervalRef.current = setInterval(tick, 200);
-    forceRender();
-  }
-
-  // Old-movie-style 3-2-1 countdown, shown once before the very first work
-  // interval of a run (not on resume-from-pause, not between rounds), so
-  // there's a moment to get set before the clock actually starts.
-  function runCountdown(onDone) {
-    ensureAudio();
-    countdownRef.current = 3;
-    forceRender();
-    let n = 3;
-    countdownTimerRef.current = setInterval(() => {
-      n -= 1;
-      playCountdownBeep();
-      if (n > 0) {
-        countdownRef.current = n;
-        forceRender();
-      } else {
-        clearInterval(countdownTimerRef.current);
-        countdownTimerRef.current = null;
-        countdownRef.current = 0;
-        forceRender();
-        onDone();
-      }
-    }, 1000);
-  }
-
   function start() {
-    if (countdownRef.current > 0) return;
     if (phaseRef.current === 'idle' || phaseRef.current === 'done') {
-      runCountdown(beginWork);
+      phaseRef.current = 'countdown';
+      roundRef.current = 1;
+      phaseTotalRef.current = COUNTDOWN_SEC;
+      remainingRef.current = COUNTDOWN_SEC;
+      phaseEndAtRef.current = Date.now() + COUNTDOWN_SEC * 1000;
+      runningRef.current = true;
+      clearInterval(intervalRef.current);
+      intervalRef.current = setInterval(tick, 200);
+      ensureAudio();
+      playTick(COUNTDOWN_SEC);
+      updateMediaSession();
+      forceRender();
       return;
     }
     runningRef.current = true;
@@ -517,49 +569,49 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     clearInterval(intervalRef.current);
     intervalRef.current = setInterval(tick, 200);
     ensureAudio();
+    updateMediaSession();
     forceRender();
   }
 
   function pause() {
+    if (phaseRef.current === 'countdown') return; // the countdown is atomic and can't be paused
     runningRef.current = false;
     clearInterval(intervalRef.current);
+    updateMediaSession();
     forceRender();
   }
 
   function reset() {
     clearInterval(intervalRef.current);
-    clearInterval(countdownTimerRef.current);
-    countdownTimerRef.current = null;
-    countdownRef.current = 0;
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
     phaseTotalRef.current = category.workSec;
     remainingRef.current = category.workSec;
+    updateMediaSession();
     forceRender();
   }
 
   function skip() {
-    if (countdownRef.current > 0) return;
     if (phaseRef.current === 'idle' || phaseRef.current === 'done') return;
     clearInterval(intervalRef.current);
-    advancePhase();
+    if (phaseRef.current === 'countdown') {
+      phaseRef.current = 'work';
+      phaseTotalRef.current = category.workSec;
+      remainingRef.current = category.workSec;
+      phaseEndAtRef.current = Date.now() + category.workSec * 1000;
+    } else {
+      advancePhase();
+    }
     if (runningRef.current) intervalRef.current = setInterval(tick, 200);
+    updateMediaSession();
     forceRender();
   }
-
-  const phase = phaseRef.current;
-  const round = roundRef.current;
-  const remaining = remainingRef.current;
-  const total = phaseTotalRef.current;
-  const running = runningRef.current;
-  const countdown = countdownRef.current;
-  const counting = countdown > 0;
 
   const CIRC = 2 * Math.PI * 90;
   const fraction = total > 0 ? remaining / total : 0;
   const ringColor = phase === 'work' ? '#33A34F' : phase === 'rest' ? '#007AFF' : phase === 'done' ? '#34C759' : '#33A34F';
-  const phaseLabel = { idle: 'Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' }[phase];
+  const phaseLabel = PHASE_LABELS[phase];
 
   function nextUpLabel() {
     const isLastRound = round >= category.rounds;
@@ -583,7 +635,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
 
       <div className="flex justify-center">
         <select value={category.id} onChange={e => onSelectCategory(e.target.value)}
-          className="bg-iosseparator/70 rounded-full pl-4 pr-4 py-2 text-[14px] font-semibold outline-none text-center">
+          className="bg-iosseparator/70 rounded-full pl-4 pr-4 py-2 text-[16px] font-semibold outline-none text-center">
           {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
         </select>
       </div>
@@ -623,16 +675,15 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
 
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-3">
-          <button onClick={start} disabled={running || counting}
+          <button onClick={start} disabled={running}
             className={`flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full font-semibold text-[16px] active:scale-95 transition ${
-              !running && !counting ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
+              !running ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
             }`}>
-            <PlayIcon className="w-5 h-5" />
-            {counting ? 'Get ready…' : (phase === 'idle' || phase === 'done' ? 'Start' : 'Resume')}
+            <PlayIcon className="w-5 h-5" /> {phase === 'idle' || phase === 'done' ? 'Start' : 'Resume'}
           </button>
-          <button onClick={pause} disabled={!running}
+          <button onClick={pause} disabled={!running || phase === 'countdown'}
             className={`flex-1 flex items-center justify-center gap-2 py-4 min-h-[44px] rounded-full font-semibold text-[16px] active:scale-95 transition ${
-              running ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
+              running && phase !== 'countdown' ? 'bg-iosblue text-white shadow-lg' : 'bg-iosseparator text-iossecondary'
             }`}>
             <PauseIcon className="w-5 h-5" /> Pause
           </button>
@@ -642,14 +693,18 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
             className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
             <ResetIcon className="w-4 h-4" /> Reset
           </button>
-          <button onClick={skip} disabled={counting}
-            className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition disabled:opacity-50">
+          <button onClick={skip}
+            className="flex-1 flex items-center justify-center gap-1.5 py-3 min-h-[44px] rounded-full bg-iosseparator text-ioslabel font-medium text-[14px] active:scale-95 transition">
             <SkipIcon className="w-4 h-4" /> Skip
           </button>
         </div>
       </div>
 
-      <CountdownOverlay value={countdown} />
+      {phase === 'countdown' && (
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center pointer-events-none">
+          <div className="text-white text-[160px] font-extrabold leading-none tabular-nums drop-shadow-2xl">{remaining}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -687,7 +742,7 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
                 <label className="text-[11px] text-iossecondary font-medium">Rounds</label>
                 <input type="number" min="1" max="99" value={cat.rounds}
                   onChange={e => onUpdateCategory(cat.id, { rounds: clamp(Number(e.target.value) || 1, 1, 99) })}
-                  className="w-12 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+                  className="w-12 text-center bg-white rounded-md py-0.5 text-[16px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
               </div>
             </div>
           </Card>
@@ -705,12 +760,12 @@ function ExerciseEditRow({ exercise, onChange, onDelete }) {
       <div className="flex items-center gap-2">
         <input value={exercise.name} placeholder="Exercise name"
           onChange={e => onChange({ ...exercise, name: e.target.value })}
-          className="flex-1 font-semibold text-[15px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue" />
+          className="flex-1 font-semibold text-[16px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue" />
         <IconButton onClick={onDelete} className="text-iosred"><TrashIcon className="w-4 h-4" /></IconButton>
       </div>
       <input value={exercise.description} placeholder="How to identify (optional)"
         onChange={e => onChange({ ...exercise, description: e.target.value })}
-        className="text-[13px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue text-iossecondary" />
+        className="text-[16px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue text-iossecondary" />
     </div>
   );
 }
@@ -768,7 +823,7 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
         <label className="text-[13px] text-iossecondary">Paste an exercise list (e.g. from Gemini) to import it</label>
         <textarea rows="5" value={importText} onChange={e => setImportText(e.target.value)}
           placeholder={'* Exercise name\n   * How to identify: ...'}
-          className="bg-iosbg rounded-xl p-3 text-[14px] outline-none focus:ring-2 focus:ring-iosblue resize-y" />
+          className="bg-iosbg rounded-xl p-3 text-[16px] outline-none focus:ring-2 focus:ring-iosblue resize-y" />
         <button onClick={doImport} className="self-start px-4 py-2 rounded-full bg-iosseparator text-[13px] font-medium">
           Import to list
         </button>
@@ -1039,7 +1094,7 @@ function App() {
 
   return (
     <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-6 gap-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 84px)' }}>
-      {tab === 'timer' && (
+      <div className={tab === 'timer' ? 'contents' : 'hidden'}>
         <TimerTab
           category={selectedCategory}
           categories={state.categories}
@@ -1047,9 +1102,9 @@ function App() {
           soundEnabled={state.soundEnabled}
           onToggleSound={() => setState(s => ({ ...s, soundEnabled: !s.soundEnabled }))}
         />
-      )}
+      </div>
 
-      {tab === 'categories' && (
+      <div className={tab === 'categories' ? 'contents' : 'hidden'}>
         <CategoriesTab
           categories={state.categories}
           selectedCategoryId={state.selectedCategoryId}
@@ -1059,9 +1114,9 @@ function App() {
           onAddCategory={addCategory}
           onDeleteCategory={deleteCategory}
         />
-      )}
+      </div>
 
-      {tab === 'workouts' && (
+      <div className={tab === 'workouts' ? 'contents' : 'hidden'}>
         <WorkoutsTab
           workouts={state.workouts}
           workoutProgress={state.workoutProgress}
@@ -1072,7 +1127,7 @@ function App() {
           onSaveWorkout={saveWorkout}
           onDeleteWorkout={deleteWorkout}
         />
-      )}
+      </div>
 
       <TabBar tab={tab} onChange={setTab} />
       <CompletionOverlay celebration={celebration} />

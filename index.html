@@ -2,7 +2,7 @@
 <html lang="en" dir="ltr">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
 <title>Fitness Timer</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#F2F2F7">
@@ -35,6 +35,7 @@
     font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, sans-serif;
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-y: none;
+    touch-action: manipulation;
   }
   * { box-sizing: border-box; }
   input[type=number]::-webkit-inner-spin-button,
@@ -50,18 +51,28 @@
     from { transform: translateY(100%); }
     to { transform: translateY(0); }
   }
-  @keyframes countdownPulse {
-    0% { opacity: 0; transform: scale(1.4); }
-    15% { opacity: 1; transform: scale(1); }
-    70% { opacity: 1; transform: scale(1); }
-    100% { opacity: 0; transform: scale(0.85); }
-  }
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 </style>
 </head>
 <body class="bg-iosbg text-ioslabel font-sf">
 <div id="root"></div>
+
+<script>
+  // Belt-and-suspenders pinch/double-tap zoom lock: the viewport meta tag
+  // above doesn't reliably block pinch on every engine, so also swallow the
+  // gesture events directly (iOS Safari) and the classic double-tap-zoom
+  // (any engine). Listeners must be non-passive for preventDefault() to work.
+  ['gesturestart', 'gesturechange', 'gestureend'].forEach(function (evt) {
+    document.addEventListener(evt, function (e) { e.preventDefault(); }, { passive: false });
+  });
+  var lastTouchEnd = 0;
+  document.addEventListener('touchend', function (e) {
+    var now = Date.now();
+    if (now - lastTouchEnd <= 300) e.preventDefault();
+    lastTouchEnd = now;
+  }, { passive: false });
+</script>
 
 <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
