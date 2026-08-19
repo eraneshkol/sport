@@ -14,8 +14,11 @@ function uid(prefix) {
 // auto-switches to when this exercise is the current one. `sets` is how
 // many rounds Auto mode (and manual current-exercise linking) runs for
 // this exercise before moving on, overriding the category's own rounds.
-function ex(name, description, sides = 'together', sets = 3) {
-  return { id: uid('ex'), name, description, sides, sets };
+// workSec/restSec are null by default, meaning "use the category's timing
+// (or its alt timing, if this exercise is 'alternating')" — set to a number
+// to override the category for this exercise specifically.
+function ex(name, description, sides = 'together', sets = 3, workSec = null, restSec = null) {
+  return { id: uid('ex'), name, description, sides, sets, workSec, restSec };
 }
 
 // Maps each exercise name to its old Hebrew cue and new English cue, so we
@@ -366,6 +369,50 @@ function TimeRow({ label, sec, onCommit }) {
   );
 }
 
+// Single-wheel counter picker (rounds, sets, etc.) — same sheet chrome as
+// TimePickerSheet, but one column of plain integers instead of min/sec.
+function CountPickerSheet({ title, value, max, onCancel, onDone }) {
+  const [v, setV] = useState(value);
+  const values = Array.from({ length: max }, (_, i) => i + 1);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-end" onClick={onCancel}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div onClick={e => e.stopPropagation()}
+        className="relative w-full max-w-md mx-auto bg-white rounded-t-3xl shadow-2xl animate-[slideUp_0.25s_ease]"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-iosseparator">
+          <button onClick={onCancel} className="text-iosblue text-[16px] px-1">Cancel</button>
+          <div className="font-semibold text-[16px]">{title}</div>
+          <button onClick={() => onDone(v)} className="text-iosblue font-semibold text-[16px] px-1">Done</button>
+        </div>
+        <div className="relative flex items-center justify-center py-3">
+          <div className="absolute inset-x-8 top-1/2 -translate-y-1/2 h-10 bg-iosbg rounded-xl pointer-events-none" />
+          <WheelColumn values={values} value={v} onChange={setV} formatItem={n => `${n}`} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function CountRow({ label, value, max, onCommit }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)}
+        className="flex flex-col gap-1.5 items-center bg-iosbg rounded-xl px-2 py-2.5 active:bg-iosseparator transition-colors">
+        <span className="text-[11px] text-iossecondary font-medium">{label}</span>
+        <span className="text-[15px] font-semibold tabular-nums">{value}</span>
+      </button>
+      {open && (
+        <CountPickerSheet title={label} value={value} max={max}
+          onCancel={() => setOpen(false)}
+          onDone={v => { onCommit(v); setOpen(false); }} />
+      )}
+    </>
+  );
+}
+
 // ===================== Timer Tab =====================
 
 const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' };
@@ -408,9 +455,10 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   // started with, and only the *next* phase transition picks up the newly
   // current exercise's timing.
   const usingAlt = !!(currentExercise && currentExercise.sides === 'alternating' && category.altWorkSec != null && category.altRestSec != null);
+  const hasExerciseTiming = !!(currentExercise && currentExercise.workSec != null && currentExercise.restSec != null);
   effectiveRef.current = {
-    workSec: usingAlt ? category.altWorkSec : category.workSec,
-    restSec: usingAlt ? category.altRestSec : category.restSec,
+    workSec: hasExerciseTiming ? currentExercise.workSec : (usingAlt ? category.altWorkSec : category.workSec),
+    restSec: hasExerciseTiming ? currentExercise.restSec : (usingAlt ? category.altRestSec : category.restSec),
     rounds: (currentExercise && currentExercise.sets) ? currentExercise.sets : category.rounds,
   };
 
@@ -903,12 +951,8 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
             <div className="grid grid-cols-3 gap-2">
               <TimeRow label="Work Time" sec={cat.workSec} onCommit={v => onUpdateCategory(cat.id, { workSec: v })} />
               <TimeRow label="Rest Time" sec={cat.restSec} onCommit={v => onUpdateCategory(cat.id, { restSec: v })} />
-              <div className="flex flex-col gap-1.5 items-center bg-iosbg rounded-xl px-2 py-2.5">
-                <label className="text-[11px] text-iossecondary font-medium">Rounds</label>
-                <input type="number" min="1" max="99" value={cat.rounds}
-                  onChange={e => onUpdateCategory(cat.id, { rounds: clamp(Number(e.target.value) || 1, 1, 99) })}
-                  className="w-12 text-center bg-white rounded-md py-0.5 text-[16px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
-              </div>
+              <CountRow label="Rounds" value={cat.rounds} max={50}
+                onCommit={v => onUpdateCategory(cat.id, { rounds: v })} />
             </div>
 
             <div className="mt-3 pt-3 border-t border-iosseparator">
@@ -940,6 +984,7 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
 // ===================== Workouts Tab =====================
 
 function ExerciseEditRow({ exercise, onChange, onDelete }) {
+  const hasCustomTiming = exercise.workSec != null && exercise.restSec != null;
   return (
     <div className="flex flex-col gap-2 py-3 border-b border-iosseparator last:border-0">
       <div className="flex items-center gap-2">
@@ -964,6 +1009,22 @@ function ExerciseEditRow({ exercise, onChange, onDelete }) {
             className="w-10 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
         </div>
       </div>
+      <label className="flex items-center justify-between gap-2 text-[13px] font-medium text-iossecondary mt-1">
+        <span>Custom work/rest time for this exercise</span>
+        <input type="checkbox" checked={hasCustomTiming}
+          onChange={e => onChange(e.target.checked
+            // Toggling on seeds a plain starting point the user then dials
+            // in below; toggling off clears both back to "use the category".
+            ? { ...exercise, workSec: 60, restSec: 30 }
+            : { ...exercise, workSec: null, restSec: null })}
+          className="w-5 h-5 accent-iosblue shrink-0" />
+      </label>
+      {hasCustomTiming && (
+        <div className="grid grid-cols-2 gap-2 mt-1">
+          <TimeRow label="Work Time" sec={exercise.workSec} onCommit={v => onChange({ ...exercise, workSec: v })} />
+          <TimeRow label="Rest Time" sec={exercise.restSec} onCommit={v => onChange({ ...exercise, restSec: v })} />
+        </div>
+      )}
     </div>
   );
 }
@@ -1010,6 +1071,8 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
         description: (e.description || '').trim(),
         sides: e.sides === 'alternating' ? 'alternating' : 'together',
         sets: clamp(Number(e.sets) || 3, 1, 20),
+        workSec: e.workSec != null ? clamp(Number(e.workSec) || 1, 1, 3599) : null,
+        restSec: e.restSec != null ? clamp(Number(e.restSec) || 0, 0, 3599) : null,
       }));
     if (clean.length === 0) { alert('Add at least one exercise'); return; }
     onSave({ id: workout ? workout.id : uid('wk'), name: cleanName, exercises: clean });
