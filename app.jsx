@@ -376,6 +376,14 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     if (!soundEnabled) return null;
     if (!audioCtxRef.current) {
       audioCtxRef.current = new (window.AudioContext || window.webkitAudioContext)();
+      // Without this, iOS Safari's Web Audio API grabs an exclusive audio
+      // session by default: it pauses whatever else is playing (e.g. YouTube,
+      // Music) and gets silenced right back. 'ambient' mixes with other apps'
+      // audio instead of stealing focus. Feature-detected — a no-op on
+      // browsers without the Audio Session API (Safari 17+).
+      if (navigator.audioSession) {
+        try { navigator.audioSession.type = 'ambient'; } catch (e) { /* unsupported value, ignore */ }
+      }
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
     return audioCtxRef.current;
