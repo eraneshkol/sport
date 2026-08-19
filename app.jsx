@@ -528,7 +528,13 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         }
       } catch (e) { /* fall back below */ }
       if (!streamed) compressor.connect(ctx.destination);
-      try { if ('audioSession' in navigator) navigator.audioSession.type = 'playback'; } catch (e) {}
+      // 'playback' claims an exclusive iOS audio session: it pauses whatever
+      // else is playing (YouTube, Music) and then gets silenced right back
+      // by it the next time that app becomes active — a fight neither side
+      // wins. 'ambient' mixes with other apps' audio instead of stealing
+      // focus; background delivery is still handled by the <audio>-element
+      // routing above, not by this category.
+      try { if ('audioSession' in navigator) navigator.audioSession.type = 'ambient'; } catch (e) {}
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
     if (audioElRef.current && audioElRef.current.paused) {
