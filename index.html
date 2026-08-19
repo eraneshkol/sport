@@ -53,10 +53,52 @@
   }
   .no-scrollbar::-webkit-scrollbar { display: none; }
   .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+
+  /* Neither iOS Safari nor a plain (non-fullscreen) browser tab honors the
+     manifest's "orientation": "portrait" or the Screen Orientation Lock
+     API, so a real lock only works for an Android PWA launched from the
+     home screen. Everywhere else, this landscape overlay is the fallback:
+     it blocks the scrambled landscape layout and asks for portrait back,
+     which is what "locked to portrait" has to mean on those platforms. */
+  #rotate-lock { display: none; }
+  @media (orientation: landscape) {
+    #root { display: none; }
+    #rotate-lock { display: flex; }
+  }
 </style>
 </head>
 <body class="bg-iosbg text-ioslabel font-sf">
 <div id="root"></div>
+
+<div id="rotate-lock" class="fixed inset-0 z-[999] flex-col items-center justify-center gap-4 bg-iosbg px-10 text-center">
+  <svg viewBox="0 0 24 24" fill="none" stroke="#8E8E93" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" class="w-12 h-12" style="animation: rotate-hint 1.8s ease-in-out infinite;">
+    <rect x="6" y="3" width="12" height="18" rx="2.2" />
+    <path d="M12 17.5h.01" />
+  </svg>
+  <div class="text-[17px] font-semibold text-ioslabel">Rotate back to portrait</div>
+  <div class="text-[13px] text-iossecondary">This app is designed for portrait use only.</div>
+</div>
+<style>
+  @keyframes rotate-hint {
+    0%, 100% { transform: rotate(0deg); }
+    50% { transform: rotate(-90deg); }
+  }
+</style>
+
+<script>
+  // Real lock where the platform actually supports it (Android PWA running
+  // standalone/fullscreen); everywhere else this silently no-ops and the
+  // CSS overlay above is what actually keeps the app usable in portrait.
+  function tryLockPortrait() {
+    if (screen.orientation && screen.orientation.lock) {
+      screen.orientation.lock('portrait').catch(function () {});
+    }
+  }
+  tryLockPortrait();
+  document.addEventListener('visibilitychange', function () {
+    if (document.visibilityState === 'visible') tryLockPortrait();
+  });
+</script>
 
 <script>
   // Belt-and-suspenders pinch/double-tap zoom lock: the viewport meta tag
