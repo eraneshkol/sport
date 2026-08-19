@@ -490,17 +490,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     // eslint-disable-next-line
   }, [autoRun, phase]);
 
-  function updateMediaSession() {
-    if (!('mediaSession' in navigator)) return;
-    try {
-      navigator.mediaSession.metadata = new MediaMetadata({
-        title: `${category.name} — ${PHASE_LABELS[phaseRef.current] || ''}`,
-        artist: `Round ${roundRef.current} of ${effectiveRef.current.rounds}`,
-      });
-      navigator.mediaSession.playbackState = runningRef.current ? 'playing' : 'paused';
-    } catch (e) { /* unsupported */ }
-  }
-
   // Keeps the tone pipeline routed through a real, continuously-playing <audio>
   // element (via a MediaStream) instead of straight to ctx.destination, since
   // mobile browsers are far more lenient about background execution/audio for
@@ -634,7 +623,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       remainingRef.current = effectiveRef.current.workSec;
       phaseEndAtRef.current = Date.now() + effectiveRef.current.workSec * 1000;
     }
-    updateMediaSession();
   }
 
   function advancePhase() {
@@ -645,7 +633,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         phaseTotalRef.current = effectiveRef.current.restSec;
         remainingRef.current = effectiveRef.current.restSec;
         phaseEndAtRef.current = Date.now() + effectiveRef.current.restSec * 1000;
-        updateMediaSession();
       } else {
         finishRoundOrDone();
       }
@@ -668,7 +655,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
           remainingRef.current = effectiveRef.current.workSec;
           phaseEndAtRef.current = now + effectiveRef.current.workSec * 1000;
           playGoSignal();
-          updateMediaSession();
         }
       }
       forceRender();
@@ -696,7 +682,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       intervalRef.current = setInterval(tick, 200);
       ensureAudio();
       playTick(COUNTDOWN_SEC);
-      updateMediaSession();
       forceRender();
       return;
     }
@@ -705,7 +690,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     clearInterval(intervalRef.current);
     intervalRef.current = setInterval(tick, 200);
     ensureAudio();
-    updateMediaSession();
     forceRender();
   }
 
@@ -727,7 +711,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     intervalRef.current = setInterval(tick, 200);
     ensureAudio();
     playChime('work');
-    updateMediaSession();
     forceRender();
   }
 
@@ -735,7 +718,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     if (phaseRef.current === 'countdown') return; // the countdown is atomic and can't be paused
     runningRef.current = false;
     clearInterval(intervalRef.current);
-    updateMediaSession();
     forceRender();
   }
 
@@ -746,7 +728,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     roundRef.current = 1;
     phaseTotalRef.current = effectiveRef.current.workSec;
     remainingRef.current = effectiveRef.current.workSec;
-    updateMediaSession();
     forceRender();
   }
 
@@ -763,7 +744,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       advancePhase();
     }
     if (runningRef.current) intervalRef.current = setInterval(tick, 200);
-    updateMediaSession();
     forceRender();
   }
 
