@@ -520,10 +520,15 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       // 'playback' claims an exclusive iOS audio session: it pauses whatever
       // else is playing (YouTube, Music) and then gets silenced right back
       // by it the next time that app becomes active — a fight neither side
-      // wins. 'ambient' mixes with other apps' audio instead of stealing
-      // focus; background delivery is still handled by the <audio>-element
+      // wins. 'ambient' avoided the fight but went silent whenever another
+      // app (e.g. Spotify) was in the foreground, since ambient audio isn't
+      // expected to sound outside our own page. 'transient' is the category
+      // built for exactly this: short notification-style sounds that play
+      // on top of whatever else is running — the same way a text-message
+      // or alarm sound cuts through music without taking over the session.
+      // Background delivery is handled separately by the <audio>-element
       // routing above, not by this category.
-      try { if ('audioSession' in navigator) navigator.audioSession.type = 'ambient'; } catch (e) {}
+      try { if ('audioSession' in navigator) navigator.audioSession.type = 'transient'; } catch (e) {}
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
     if (audioElRef.current && audioElRef.current.paused) {
