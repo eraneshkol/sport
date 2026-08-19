@@ -1035,23 +1035,55 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
   const [importText, setImportText] = useState('');
 
   function parseWorkoutText(text) {
-    const lines = text.split(/\r?\n/);
-    const parsed = [];
-    lines.forEach(raw => {
-      if (!raw.trim()) return;
-      const leadingSpaces = raw.match(/^(\s*)/)[1].length;
-      const content = raw.trim().replace(/^[-*•]\s*/, '');
-      if (!content) return;
-      if (leadingSpaces === 0) {
-        parsed.push(ex(content, ''));
-      } else if (parsed.length > 0) {
-        const m = content.match(/(?:how to identify|איך מזהים):\s*(.*)/i);
-        const descText = (m ? m[1] : content).trim();
-        const last = parsed[parsed.length - 1];
-        last.description = last.description ? last.description + ' ' + descText : descText;
+    const lines = text.split(/\r?\n/)
+      .map(raw => ({ indent: (raw.match(/^(\s*)/) || ['', ''])[1].length, content: raw.trim().replace(/^[-*•]\s*/, '') }))
+      .filter(l => l.content);
+    if (lines.length === 0) return [];
+
+    // Nested/bulleted format: exercise names sit at the lowest indentation
+    // level, recurring more than once, with one or more indented description
+    // line(s) folded underneath each one.
+    const minIndent = Math.min(...lines.map(l => l.indent));
+    const lowIndentCount = lines.filter(l => l.indent === minIndent).length;
+    const looksNested = lowIndentCount >= 2 && lowIndentCount < lines.length;
+
+    if (looksNested) {
+      const parsed = [];
+      lines.forEach(({ indent, content }) => {
+        if (indent === minIndent) {
+          parsed.push(ex(content, ''));
+        } else if (parsed.length > 0) {
+          const m = content.match(/(?:how to identify|איך מזהים):\s*(.*)/i);
+          const descText = (m ? m[1] : content).trim();
+          const last = parsed[parsed.length - 1];
+          last.description = last.description ? last.description + ' ' + descText : descText;
+        }
+      });
+      return parsed;
+    }
+
+    // Flat text with no indentation/bullets to lean on (e.g. pasted straight
+    // from an AI chat): if every consecutive pair of lines looks like a short
+    // name followed by a longer, sentence-like description, treat it as
+    // alternating name/description pairs instead of one exercise per line.
+    if (lines.length % 2 === 0) {
+      const pairsLookRight = lines.every((l, i) => {
+        if (i % 2 === 1) return true; // checked together with its preceding name line
+        const name = l, desc = lines[i + 1];
+        const nameWords = name.content.split(/\s+/).length;
+        const descWords = desc.content.split(/\s+/).length;
+        const descLooksLikeSentence = /[.,]/.test(desc.content) || descWords >= 5;
+        return nameWords <= 6 && descWords > nameWords && descLooksLikeSentence;
+      });
+      if (pairsLookRight) {
+        const parsed = [];
+        for (let i = 0; i < lines.length; i += 2) parsed.push(ex(lines[i].content, lines[i + 1].content));
+        return parsed;
       }
-    });
-    return parsed;
+    }
+
+    // Otherwise: a plain list, one exercise per line, no description.
+    return lines.map(l => ex(l.content, ''));
   }
 
   function doImport() {
@@ -1087,9 +1119,9 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
       </div>
 
       <Card className="p-4 flex flex-col gap-2">
-        <label className="text-[13px] text-iossecondary">Paste an exercise list (e.g. from Gemini) to import it</label>
+        <label className="text-[13px] text-iossecondary">Paste an exercise list (e.g. from Gemini) to import it — either a bulleted/indented list, or plain alternating lines of name then description</label>
         <textarea rows="5" value={importText} onChange={e => setImportText(e.target.value)}
-          placeholder={'* Exercise name\n   * How to identify: ...'}
+          placeholder={'* Exercise name\n   * How to identify: ...\n\n— or —\n\nExercise name\nHow to identify it'}
           className="bg-iosbg rounded-xl p-3 text-[16px] outline-none focus:ring-2 focus:ring-iosblue resize-y" />
         <button onClick={doImport} className="self-start px-4 py-2 rounded-full bg-iosseparator text-[13px] font-medium">
           Import to list
