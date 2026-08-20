@@ -17,8 +17,39 @@ function uid(prefix) {
 // workSec/restSec are null by default, meaning "use the category's timing
 // (or its alt timing, if this exercise is 'alternating')" — set to a number
 // to override the category for this exercise specifically.
-function ex(name, description, sides = 'together', sets = 3, workSec = null, restSec = null) {
-  return { id: uid('ex'), name, description, sides, sets, workSec, restSec };
+function ex(name, description, sides = 'together', sets = 3, workSec = null, restSec = null, weightKg = null, supersetWithNext = false) {
+  return { id: uid('ex'), name, description, sides, sets, workSec, restSec, weightKg, supersetWithNext };
+}
+
+// Weight is always stored in kg — entry can happen in kg or lb, converted
+// on the way in, so the plan only ever needs to display one unit.
+const LB_PER_KG = 2.20462262185;
+function kgToLb(kg) { return kg * LB_PER_KG; }
+function lbToKg(lb) { return lb / LB_PER_KG; }
+function formatWeightKg(kg) {
+  return (Math.round(kg * 100) / 100).toString();
+}
+
+// A superset is a run of consecutive exercises chained by `supersetWithNext`
+// (exercise N sets it to link itself to exercise N+1): they run back-to-back
+// with no rest in between, sharing the round count of the first (leader)
+// exercise, with rest only after the last member of each round. Grouping
+// exercises this way (instead of a separate group-id field) means chain
+// length falls out of a single boolean per exercise with no extra state to
+// keep in sync when exercises are added, removed, or reordered.
+function computeExerciseGroups(exercises) {
+  const groups = [];
+  let i = 0;
+  while (i < exercises.length) {
+    const start = i;
+    while (i < exercises.length && exercises[i].supersetWithNext) i++;
+    if (i < exercises.length) i++; // include the member that ends the chain
+    groups.push(exercises.slice(start, i));
+  }
+  return groups;
+}
+function findGroupFor(exercises, exerciseId) {
+  return computeExerciseGroups(exercises).find(g => g.some(e => e.id === exerciseId)) || null;
 }
 
 // Maps each exercise name to its old Hebrew cue and new English cue, so we
@@ -145,7 +176,9 @@ function migrateState(loaded) {
       // never second-guessed by name again.
       const sides = e.sides == null ? (DEFAULT_SIDES_BY_NAME[e.name] || 'together') : e.sides;
       const sets = e.sets == null ? 3 : e.sets;
-      return { ...e, description: translated || e.description, sides, sets };
+      const weightKg = e.weightKg === undefined ? null : e.weightKg;
+      const supersetWithNext = !!e.supersetWithNext;
+      return { ...e, description: translated || e.description, sides, sets, weightKg, supersetWithNext };
     }),
   }));
   if (!state.workoutProgress) state.workoutProgress = {};
@@ -419,7 +452,7 @@ const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest
 const COUNTDOWN_SEC = 3;
 
 function TimerTab({ category, categories, onSelectCategory, soundEnabled, onToggleSound, currentExercise,
-  nextExercise, autoRun, onAutoExerciseComplete, onStopAuto }) {
+  currentGroup, nextExercise, autoRun, onAutoExerciseComplete, onStopAuto }) {
   const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
   const remainingRef = useRef(category.workSec);
@@ -432,6 +465,10 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const audioElRef = useRef(null);
   const wakeLockRef = useRef(null);
   const effectiveRef = useRef({ workSec: category.workSec, restSec: category.restSec });
+  // Which member of a superset group is currently in its work phase — always
+  // 0 for a plain single exercise. Reset to 0 whenever a fresh round begins.
+  const groupMemberIndexRef = useRef(0);
+  const groupRef = useRef([]);
   const autoStartedForRef = useRef(null); // id of the exercise the current Auto cycle was started for
   const autoCompletedForRef = useRef(null); // guards against double-firing completion for the same 'done' state
   const autoFirstDoneRef = useRef(false); // true once this Auto *run* has done its one countdown
@@ -446,20 +483,28 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const autoSuppressedRef = useRef(null);
   if (autoSuppressedRef.current === null) autoSuppressedRef.current = autoRun;
 
-  // The current exercise can change mid-phase (e.g. you tap a different
-  // exercise on the checklist while resting) — that must NOT interrupt a
-  // running phase. So this is just a plain assignment on every render (not a
-  // useEffect), and every phase-transition function below reads from this
-  // ref at the moment it fires rather than closing over `category` directly.
+  // The current exercise (or, for a superset, the active member of the
+  // current group) can change mid-phase (e.g. you tap a different exercise
+  // on the checklist while resting) — that must NOT interrupt a running
+  // phase. So this is just a plain assignment on every render (not a
+  // useEffect), and every phase-transition function below reads from these
+  // refs at the moment it fires rather than closing over props directly.
   // That means: a running phase always finishes with whatever timing it
-  // started with, and only the *next* phase transition picks up the newly
-  // current exercise's timing.
-  const usingAlt = !!(currentExercise && currentExercise.sides === 'alternating' && category.altWorkSec != null && category.altRestSec != null);
-  const hasExerciseTiming = !!(currentExercise && currentExercise.workSec != null && currentExercise.restSec != null);
+  // started with, and only the *next* phase transition picks up whatever is
+  // newly current.
+  groupRef.current = (currentGroup && currentGroup.length) ? currentGroup : (currentExercise ? [currentExercise] : []);
+  function effectiveFor(member) {
+    const usingAlt = !!(member && member.sides === 'alternating' && category.altWorkSec != null && category.altRestSec != null);
+    const hasExerciseTiming = !!(member && member.workSec != null && member.restSec != null);
+    return {
+      workSec: hasExerciseTiming ? member.workSec : (usingAlt ? category.altWorkSec : category.workSec),
+      restSec: hasExerciseTiming ? member.restSec : (usingAlt ? category.altRestSec : category.restSec),
+    };
+  }
+  const activeMember = groupRef.current[groupMemberIndexRef.current] || groupRef.current[0] || currentExercise;
   effectiveRef.current = {
-    workSec: hasExerciseTiming ? currentExercise.workSec : (usingAlt ? category.altWorkSec : category.workSec),
-    restSec: hasExerciseTiming ? currentExercise.restSec : (usingAlt ? category.altRestSec : category.restSec),
-    rounds: (currentExercise && currentExercise.sets) ? currentExercise.sets : category.rounds,
+    ...effectiveFor(activeMember),
+    rounds: (groupRef.current[0] && groupRef.current[0].sets) ? groupRef.current[0].sets : category.rounds,
   };
 
   useEffect(() => {
@@ -467,6 +512,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
+    groupMemberIndexRef.current = 0;
     phaseTotalRef.current = effectiveRef.current.workSec;
     remainingRef.current = effectiveRef.current.workSec;
     forceRender();
@@ -531,7 +577,13 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   // which advances the App's "current exercise" to the next one, which part
   // 1 above then picks up automatically.
   useEffect(() => {
-    if (!autoRun || phase !== 'done' || !currentExercise) return;
+    // Reads phaseRef (not the `phase` snapshot from this render) because Auto
+    // mode's part-1 effect above can run in the same pass and immediately
+    // move the ref off 'done' (e.g. Auto gets switched on while a previous
+    // *manual* run had been left sitting at 'done') — checking the stale
+    // snapshot here would otherwise mark the exercise complete without it
+    // ever actually having run under Auto.
+    if (!autoRun || phaseRef.current !== 'done' || !currentExercise) return;
     if (autoCompletedForRef.current === currentExercise.id) return;
     autoCompletedForRef.current = currentExercise.id;
     onAutoExerciseComplete(currentExercise.id);
@@ -671,15 +723,31 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     } else {
       playChime('work');
       roundRef.current += 1;
+      groupMemberIndexRef.current = 0;
+      const eff = effectiveFor(groupRef.current[0]);
       phaseRef.current = 'work';
-      phaseTotalRef.current = effectiveRef.current.workSec;
-      remainingRef.current = effectiveRef.current.workSec;
-      phaseEndAtRef.current = Date.now() + effectiveRef.current.workSec * 1000;
+      phaseTotalRef.current = eff.workSec;
+      remainingRef.current = eff.workSec;
+      phaseEndAtRef.current = Date.now() + eff.workSec * 1000;
     }
   }
 
   function advancePhase() {
     if (phaseRef.current === 'work') {
+      const group = groupRef.current;
+      // Superset members run back-to-back with no rest between them — only
+      // the last member of the group in this round triggers a rest (or, if
+      // there's no rest configured, the next round directly).
+      if (groupMemberIndexRef.current < group.length - 1) {
+        groupMemberIndexRef.current += 1;
+        const eff = effectiveFor(group[groupMemberIndexRef.current]);
+        playChime('work');
+        phaseRef.current = 'work';
+        phaseTotalRef.current = eff.workSec;
+        remainingRef.current = eff.workSec;
+        phaseEndAtRef.current = Date.now() + eff.workSec * 1000;
+        return;
+      }
       if (effectiveRef.current.restSec > 0) {
         playChime('rest');
         phaseRef.current = 'rest';
@@ -727,6 +795,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     if (phaseRef.current === 'idle' || phaseRef.current === 'done') {
       phaseRef.current = 'countdown';
       roundRef.current = 1;
+      groupMemberIndexRef.current = 0;
       phaseTotalRef.current = COUNTDOWN_SEC;
       remainingRef.current = COUNTDOWN_SEC;
       phaseEndAtRef.current = Date.now() + COUNTDOWN_SEC * 1000;
@@ -756,9 +825,11 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     if (phaseRef.current !== 'idle' && phaseRef.current !== 'done') return;
     phaseRef.current = 'work';
     roundRef.current = 1;
-    phaseTotalRef.current = effectiveRef.current.workSec;
-    remainingRef.current = effectiveRef.current.workSec;
-    phaseEndAtRef.current = Date.now() + effectiveRef.current.workSec * 1000;
+    groupMemberIndexRef.current = 0;
+    const eff = effectiveFor(groupRef.current[0]);
+    phaseTotalRef.current = eff.workSec;
+    remainingRef.current = eff.workSec;
+    phaseEndAtRef.current = Date.now() + eff.workSec * 1000;
     runningRef.current = true;
     clearInterval(intervalRef.current);
     intervalRef.current = setInterval(tick, 200);
@@ -779,6 +850,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
+    groupMemberIndexRef.current = 0;
     phaseTotalRef.current = effectiveRef.current.workSec;
     remainingRef.current = effectiveRef.current.workSec;
     forceRender();
@@ -811,6 +883,9 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   function nextUpLabel() {
     const isLastRound = round >= effectiveRef.current.rounds;
     if (phase === 'work') {
+      if (groupMemberIndexRef.current < groupRef.current.length - 1) {
+        return `Next · ${groupRef.current[groupMemberIndexRef.current + 1].name}`;
+      }
       if (effectiveRef.current.restSec > 0) return `Next · Rest ${fmtTime(effectiveRef.current.restSec)}`;
       return isLastRound ? 'Last interval' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
     }
@@ -819,6 +894,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     return '';
   }
 
+  const isSuperset = groupRef.current.length > 1;
   const showExerciseLink = !!(currentExercise && category.altWorkSec != null && category.altRestSec != null);
 
   return (
@@ -851,7 +927,11 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
           <span className="text-[13px] font-semibold tabular-nums">{effectiveRef.current.rounds}</span>
         </div>
       </div>
-      {showExerciseLink ? (
+      {isSuperset ? (
+        <div className="text-center text-[12px] text-iosorange font-medium -mt-4">
+          Superset · {activeMember.name} ({groupMemberIndexRef.current + 1}/{groupRef.current.length})
+        </div>
+      ) : showExerciseLink ? (
         <div className="text-center text-[12px] text-iosblue font-medium -mt-4">
           Now: {currentExercise.name} · {currentExercise.sides === 'alternating' ? 'One side at a time' : 'Both sides together'}
         </div>
@@ -983,10 +1063,27 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
 
 // ===================== Workouts Tab =====================
 
-function ExerciseEditRow({ exercise, onChange, onDelete }) {
+function ExerciseEditRow({ exercise, onChange, onDelete, isLast, isGroupContinuation }) {
   const hasCustomTiming = exercise.workSec != null && exercise.restSec != null;
+  // Purely a display/entry choice — the exercise itself always stores
+  // weightKg, so switching this doesn't touch the saved value, only how
+  // the number in the box below is interpreted while typing.
+  const [weightUnit, setWeightUnit] = useState('kg');
+  const weightDisplay = exercise.weightKg == null ? '' :
+    (weightUnit === 'kg' ? formatWeightKg(exercise.weightKg) : formatWeightKg(kgToLb(exercise.weightKg)));
+
+  function handleWeightChange(raw) {
+    if (raw.trim() === '') { onChange({ ...exercise, weightKg: null }); return; }
+    const n = Number(raw);
+    if (Number.isNaN(n)) return;
+    onChange({ ...exercise, weightKg: weightUnit === 'kg' ? n : lbToKg(n) });
+  }
+
   return (
     <div className="flex flex-col gap-2 py-3 border-b border-iosseparator last:border-0">
+      {isGroupContinuation && (
+        <div className="text-[11px] text-iosorange font-semibold">↳ Superset with exercise above — shares its rounds</div>
+      )}
       <div className="flex items-center gap-2">
         <input value={exercise.name} placeholder="Exercise name"
           onChange={e => onChange({ ...exercise, name: e.target.value })}
@@ -996,17 +1093,31 @@ function ExerciseEditRow({ exercise, onChange, onDelete }) {
       <input value={exercise.description} placeholder="How to identify (optional)"
         onChange={e => onChange({ ...exercise, description: e.target.value })}
         className="text-[16px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue text-iossecondary" />
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 flex-wrap">
         <SegmentedControl
           options={[{ value: 'together', label: 'Both sides together' }, { value: 'alternating', label: 'One side at a time' }]}
           value={exercise.sides === 'alternating' ? 'alternating' : 'together'}
           onChange={sides => onChange({ ...exercise, sides })}
         />
+        {!isGroupContinuation && (
+          <div className="flex flex-col gap-0.5 items-center bg-iosbg rounded-xl px-2 py-1.5 shrink-0">
+            <label className="text-[10px] text-iossecondary font-medium">Sets</label>
+            <input type="number" min="1" max="20" value={exercise.sets == null ? 3 : exercise.sets}
+              onChange={e => onChange({ ...exercise, sets: clamp(Number(e.target.value) || 1, 1, 20) })}
+              className="w-10 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+          </div>
+        )}
         <div className="flex flex-col gap-0.5 items-center bg-iosbg rounded-xl px-2 py-1.5 shrink-0">
-          <label className="text-[10px] text-iossecondary font-medium">Sets</label>
-          <input type="number" min="1" max="20" value={exercise.sets == null ? 3 : exercise.sets}
-            onChange={e => onChange({ ...exercise, sets: clamp(Number(e.target.value) || 1, 1, 20) })}
-            className="w-10 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+          <label className="text-[10px] text-iossecondary font-medium whitespace-nowrap">Weight (per DB)</label>
+          <div className="flex items-center gap-1">
+            <input type="number" min="0" step="0.5" placeholder="—" value={weightDisplay}
+              onChange={e => handleWeightChange(e.target.value)}
+              className="w-14 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+            <button type="button" onClick={() => setWeightUnit(u => u === 'kg' ? 'lbs' : 'kg')}
+              className="text-[11px] font-semibold text-iosblue px-1.5 py-0.5 rounded-md bg-white">
+              {weightUnit}
+            </button>
+          </div>
         </div>
       </div>
       <label className="flex items-center justify-between gap-2 text-[13px] font-medium text-iossecondary mt-1">
@@ -1024,6 +1135,13 @@ function ExerciseEditRow({ exercise, onChange, onDelete }) {
           <TimeRow label="Work Time" sec={exercise.workSec} onCommit={v => onChange({ ...exercise, workSec: v })} />
           <TimeRow label="Rest Time" sec={exercise.restSec} onCommit={v => onChange({ ...exercise, restSec: v })} />
         </div>
+      )}
+      {!isLast && (
+        <label className="flex items-center gap-2 text-[13px] text-iossecondary select-none">
+          <input type="checkbox" checked={!!exercise.supersetWithNext}
+            onChange={e => onChange({ ...exercise, supersetWithNext: e.target.checked })} />
+          Superset with next exercise (no rest between them)
+        </label>
       )}
     </div>
   );
@@ -1105,6 +1223,8 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
         sets: clamp(Number(e.sets) || 3, 1, 20),
         workSec: e.workSec != null ? clamp(Number(e.workSec) || 1, 1, 3599) : null,
         restSec: e.restSec != null ? clamp(Number(e.restSec) || 0, 0, 3599) : null,
+        weightKg: e.weightKg == null || Number.isNaN(Number(e.weightKg)) ? null : Number(e.weightKg),
+        supersetWithNext: !!e.supersetWithNext,
       }));
     if (clean.length === 0) { alert('Add at least one exercise'); return; }
     onSave({ id: workout ? workout.id : uid('wk'), name: cleanName, exercises: clean });
@@ -1119,9 +1239,8 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
       </div>
 
       <Card className="p-4 flex flex-col gap-2">
-        <label className="text-[13px] text-iossecondary">Paste an exercise list (e.g. from Gemini) to import it — either a bulleted/indented list, or plain alternating lines of name then description</label>
+        <label className="text-[13px] text-iossecondary">Paste exercise list</label>
         <textarea rows="5" value={importText} onChange={e => setImportText(e.target.value)}
-          placeholder={'* Exercise name\n   * How to identify: ...\n\n— or —\n\nExercise name\nHow to identify it'}
           className="bg-iosbg rounded-xl p-3 text-[16px] outline-none focus:ring-2 focus:ring-iosblue resize-y" />
         <button onClick={doImport} className="self-start px-4 py-2 rounded-full bg-iosseparator text-[13px] font-medium">
           Import to list
@@ -1132,6 +1251,8 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
         {exercises.length === 0 && <div className="text-iossecondary text-[13px] py-2">No exercises yet.</div>}
         {exercises.map((exr, i) => (
           <ExerciseEditRow key={exr.id} exercise={exr}
+            isLast={i === exercises.length - 1}
+            isGroupContinuation={i > 0 && !!exercises[i - 1].supersetWithNext}
             onChange={updated => setExercises(prev => prev.map((e, idx) => idx === i ? updated : e))}
             onDelete={() => setExercises(prev => prev.filter((_, idx) => idx !== i))} />
         ))}
@@ -1187,7 +1308,7 @@ function CheckCircle({ checked }) {
 // Three distinct gestures on one card: tap the checkbox to mark done, tap
 // the rest of the card to set it as the "current" exercise (what the Timer
 // adapts its timing to), long-press the card to enter reorder mode.
-function ExerciseCard({ exercise, checked, isCurrent, onToggle, onSetCurrent, onLongPress }) {
+function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onToggle, onSetCurrent, onLongPress }) {
   const pressTimer = useRef(null);
   const longPressFired = useRef(false);
   const startPos = useRef({ x: 0, y: 0 });
@@ -1233,6 +1354,12 @@ function ExerciseCard({ exercise, checked, isCurrent, onToggle, onSetCurrent, on
           <div className="flex items-center gap-1.5">
             {isCurrent && <span className="text-iosblue text-[10px] font-bold uppercase tracking-wide">Now</span>}
             <div className={`font-semibold text-[15px] ${checked ? 'line-through text-iossecondary' : ''}`}>{exercise.name}</div>
+            {exercise.weightKg != null && (
+              <span className="text-[12px] text-iossecondary font-medium shrink-0">{formatWeightKg(exercise.weightKg)} kg ea</span>
+            )}
+            {(exercise.supersetWithNext || isGroupContinuation) && (
+              <span className="text-[10px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2 py-0.5 rounded-full shrink-0">Superset</span>
+            )}
           </div>
           {exercise.description && <div className="text-[13px] text-iossecondary mt-0.5">{exercise.description}</div>}
         </div>
@@ -1325,9 +1452,10 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
       <div className="text-center text-[13px] text-iossecondary -mt-1">{doneCount} of {total} done · long-press to reorder</div>
 
       <div className="flex flex-col gap-2.5">
-        {workout.exercises.map(exr => (
+        {workout.exercises.map((exr, i) => (
           <ExerciseCard key={exr.id} exercise={exr} checked={!!progress[exr.id]}
             isCurrent={!!currentExercise && currentExercise.id === exr.id}
+            isGroupContinuation={i > 0 && !!workout.exercises[i - 1].supersetWithNext}
             onToggle={() => onToggleExercise(exr.id, !progress[exr.id])}
             onSetCurrent={() => onSetCurrentExercise(exr.id)}
             onLongPress={() => setReorderList(workout.exercises.map(e => ({ ...e })))} />
@@ -1430,21 +1558,32 @@ function App() {
     const overrideId = state.currentExerciseOverride[workoutId];
     if (overrideId) {
       const overrideEx = workout.exercises.find(e => e.id === overrideId);
-      if (overrideEx && !progress[overrideEx.id]) return overrideEx;
+      // Tapping any member of a superset always resumes the group from its
+      // leader — the engine only knows how to run a group start-to-finish.
+      if (overrideEx && !progress[overrideEx.id]) {
+        const group = findGroupFor(workout.exercises, overrideEx.id);
+        return (group && group[0]) || overrideEx;
+      }
     }
     return workout.exercises.find(e => !progress[e.id]) || null;
   }
   const currentExercise = getCurrentExercise(state.activeWorkoutId);
+  const activeWorkoutForGroup = state.workouts.find(w => w.id === state.activeWorkoutId);
+  const currentGroup = currentExercise && activeWorkoutForGroup
+    ? (findGroupFor(activeWorkoutForGroup.exercises, currentExercise.id) || [currentExercise])
+    : null;
 
   // The exercise Auto mode (and the Timer's "up next" preview) will move to
   // once the current one's sets are done — the next not-yet-checked
-  // exercise after the current one in the workout's own order.
+  // exercise after the current *group* (a superset advances as one unit).
   function getNextExercise(workoutId, currentEx) {
     if (!currentEx) return null;
     const workout = state.workouts.find(w => w.id === workoutId);
     if (!workout) return null;
     const progress = state.workoutProgress[workoutId] || {};
-    const idx = workout.exercises.findIndex(e => e.id === currentEx.id);
+    const group = findGroupFor(workout.exercises, currentEx.id) || [currentEx];
+    const lastMember = group[group.length - 1];
+    const idx = workout.exercises.findIndex(e => e.id === lastMember.id);
     if (idx === -1) return null;
     return workout.exercises.slice(idx + 1).find(e => !progress[e.id]) || null;
   }
@@ -1476,7 +1615,12 @@ function App() {
   }
 
   function setCurrentExercise(workoutId, exerciseId) {
-    setState(s => ({ ...s, currentExerciseOverride: { ...s.currentExerciseOverride, [workoutId]: exerciseId } }));
+    setState(s => {
+      const workout = s.workouts.find(w => w.id === workoutId);
+      const group = workout ? findGroupFor(workout.exercises, exerciseId) : null;
+      const leaderId = (group && group[0].id) || exerciseId;
+      return { ...s, currentExerciseOverride: { ...s.currentExerciseOverride, [workoutId]: leaderId } };
+    });
   }
   function clearCurrentExerciseOverride(workoutId) {
     setState(s => {
@@ -1514,12 +1658,16 @@ function App() {
   function toggleExercise(workoutId, exerciseId, checked) {
     setState(s => {
       const workout = s.workouts.find(w => w.id === workoutId);
-      const nextProgress = { ...(s.workoutProgress[workoutId] || {}), [exerciseId]: checked };
+      // A superset is done or not as one unit — check/uncheck every member
+      // together, since they're never run separately.
+      const group = findGroupFor(workout.exercises, exerciseId) || [{ id: exerciseId }];
+      const nextProgress = { ...(s.workoutProgress[workoutId] || {}) };
+      group.forEach(e => { nextProgress[e.id] = checked; });
       const allDone = workout.exercises.every(e => nextProgress[e.id]);
       const currentExerciseOverride = { ...s.currentExerciseOverride };
       // Checking off the exercise that was manually set as "current" clears
       // the override, so the next unchecked exercise takes over automatically.
-      if (checked && currentExerciseOverride[workoutId] === exerciseId) delete currentExerciseOverride[workoutId];
+      if (checked && group.some(e => currentExerciseOverride[workoutId] === e.id)) delete currentExerciseOverride[workoutId];
       // Finishing the workout also ends Auto mode for it — Auto mode is
       // scoped to running through one workout, not chaining into the next.
       const autoRunWorkoutId = (checked && allDone && s.autoRunWorkoutId === workoutId) ? null : s.autoRunWorkoutId;
@@ -1598,6 +1746,7 @@ function App() {
           soundEnabled={state.soundEnabled}
           onToggleSound={() => setState(s => ({ ...s, soundEnabled: !s.soundEnabled }))}
           currentExercise={currentExercise}
+          currentGroup={currentGroup}
           nextExercise={nextExercise}
           autoRun={autoRun}
           onAutoExerciseComplete={completeAutoExercise}
