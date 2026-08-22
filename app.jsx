@@ -617,18 +617,19 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         }
       } catch (e) { /* fall back below */ }
       if (!streamed) compressor.connect(ctx.destination);
-      // 'playback' claims an exclusive iOS audio session: it pauses whatever
-      // else is playing (YouTube, Music) and then gets silenced right back
-      // by it the next time that app becomes active — a fight neither side
-      // wins. 'ambient' avoided the fight but went silent whenever another
-      // app (e.g. Spotify) was in the foreground, since ambient audio isn't
-      // expected to sound outside our own page. 'transient' is the category
-      // built for exactly this: short notification-style sounds that play
-      // on top of whatever else is running — the same way a text-message
-      // or alarm sound cuts through music without taking over the session.
-      // Background delivery is handled separately by the <audio>-element
-      // routing above, not by this category.
-      try { if ('audioSession' in navigator) navigator.audioSession.type = 'transient'; } catch (e) {}
+      // iOS only keeps this tab's timer/audio actually running once it's no
+      // longer the frontmost app (e.g. you switched to Spotify) for a
+      // session categorized for continuous background audio — that's
+      // 'playback'. 'ambient'/'transient' avoid ever fighting another app
+      // for focus, but the tradeoff turned out to be worse: iOS is then
+      // free to suspend this page while backgrounded, so rounds finish
+      // silently and every queued sound only fires in a burst once you
+      // switch back — which is what was causing the AirPods glitch, not
+      // the category itself. A workout timer that goes silent in the
+      // background isn't useful, so this trades a brief, expected duck of
+      // other audio when a cue plays (normal for any timer/alarm app) for
+      // actually being reliable while backgrounded.
+      try { if ('audioSession' in navigator) navigator.audioSession.type = 'playback'; } catch (e) {}
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
     if (audioElRef.current && audioElRef.current.paused) {
