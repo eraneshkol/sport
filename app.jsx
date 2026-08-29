@@ -89,6 +89,7 @@ function defaultWorkouts() {
     {
       id: 'wk-a',
       name: 'Workout A',
+      inRotation: true,
       exercises: [
         ex('Dumbbell RDL', EXERCISE_DESCRIPTIONS['Dumbbell RDL'][1]),
         ex('Dumbbell Bench Press', EXERCISE_DESCRIPTIONS['Dumbbell Bench Press'][1]),
@@ -101,6 +102,7 @@ function defaultWorkouts() {
     {
       id: 'wk-b',
       name: 'Workout B',
+      inRotation: true,
       exercises: [
         ex('Goblet Squat', EXERCISE_DESCRIPTIONS['Goblet Squat'][1]),
         ex('Incline Dumbbell Press', EXERCISE_DESCRIPTIONS['Incline Dumbbell Press'][1]),
@@ -169,6 +171,10 @@ function migrateState(loaded) {
   // Also backfill `sides`/`sets` on exercises saved before those fields existed.
   state.workouts = state.workouts.map(w => ({
     ...w,
+    // Only the two original workouts auto-advance into each other after a
+    // finish; any other workout (imported, duplicated, or otherwise added)
+    // defaults to manual-only — you switch to it yourself when you want it.
+    inRotation: typeof w.inRotation === 'boolean' ? w.inRotation : (w.id === 'wk-a' || w.id === 'wk-b'),
     exercises: w.exercises.map(e => {
       const translated = LEGACY_DESCRIPTION_TO_ENGLISH[e.description];
       // Only ever backfill when the field is truly absent (pre-migration
@@ -1062,7 +1068,7 @@ function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRen
 
 // ===================== Workouts Tab =====================
 
-function ExerciseEditRow({ exercise, onChange, onDelete, isLast, isGroupContinuation }) {
+function ExerciseEditRow({ exercise, onChange, onDelete, isLast, isGroupContinuation, otherWorkouts, onCopyTo }) {
   const hasCustomTiming = exercise.workSec != null && exercise.restSec != null;
   // Purely a display/entry choice — the exercise itself always stores
   // weightKg, so switching this doesn't touch the saved value, only how
@@ -1142,11 +1148,18 @@ function ExerciseEditRow({ exercise, onChange, onDelete, isLast, isGroupContinua
           Superset with next exercise (no rest between them)
         </label>
       )}
+      {otherWorkouts && otherWorkouts.length > 0 && (
+        <select value="" onChange={e => { if (e.target.value) onCopyTo(e.target.value); }}
+          className="bg-iosbg rounded-lg px-3 py-2 text-[13px] text-iossecondary outline-none focus:ring-2 focus:ring-iosblue">
+          <option value="" disabled>Duplicate to another workout…</option>
+          {otherWorkouts.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+        </select>
+      )}
     </div>
   );
 }
 
-function WorkoutEditView({ workout, onCancel, onSave }) {
+function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }) {
   const [name, setName] = useState(workout ? workout.name : '');
   const [exercises, setExercises] = useState(workout ? workout.exercises.map(e => ({ ...e })) : []);
   const [importText, setImportText] = useState('');
@@ -1226,7 +1239,10 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
         supersetWithNext: !!e.supersetWithNext,
       }));
     if (clean.length === 0) { alert('Add at least one exercise'); return; }
-    onSave({ id: workout ? workout.id : uid('wk'), name: cleanName, exercises: clean });
+    // A brand-new workout defaults to manual-only (not in rotation); editing
+    // an existing one preserves whatever it already had.
+    const inRotation = workout ? workout.inRotation !== false : false;
+    onSave({ id: workout ? workout.id : uid('wk'), name: cleanName, exercises: clean, inRotation });
   }
 
   return (
@@ -1238,8 +1254,9 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
       </div>
 
       <Card className="p-4 flex flex-col gap-2">
-        <label className="text-[13px] text-iossecondary">Paste exercise list</label>
+        <label className="text-[13px] text-iossecondary">Paste an exercise list — either a bulleted/indented list, or plain alternating lines of name then description</label>
         <textarea rows="5" value={importText} onChange={e => setImportText(e.target.value)}
+          placeholder={'* Exercise name\n   * How to identify: ...\n\n— or —\n\nExercise name\nHow to identify it'}
           className="bg-iosbg rounded-xl p-3 text-[16px] outline-none focus:ring-2 focus:ring-iosblue resize-y" />
         <button onClick={doImport} className="self-start px-4 py-2 rounded-full bg-iosseparator text-[13px] font-medium">
           Import to list
@@ -1252,6 +1269,13 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
           <ExerciseEditRow key={exr.id} exercise={exr}
             isLast={i === exercises.length - 1}
             isGroupContinuation={i > 0 && !!exercises[i - 1].supersetWithNext}
+            otherWorkouts={(workouts || []).filter(w => w.id !== (workout && workout.id))}
+            onCopyTo={(targetId) => {
+              const target = (workouts || []).find(w => w.id === targetId);
+              if (!target) return;
+              onCopyExercise(exr, targetId);
+              alert(`Copied "${exr.name || 'exercise'}" to ${target.name}.`);
+            }}
             onChange={updated => setExercises(prev => prev.map((e, idx) => idx === i ? updated : e))}
             onDelete={() => setExercises(prev => prev.filter((_, idx) => idx !== i))} />
         ))}
@@ -1268,7 +1292,7 @@ function WorkoutEditView({ workout, onCancel, onSave }) {
   );
 }
 
-function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete }) {
+function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete, onToggleRotation }) {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
@@ -1278,15 +1302,23 @@ function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete }) {
       </div>
       <div className="flex flex-col gap-3">
         {workouts.map(wk => (
-          <Card key={wk.id} className="p-4 flex items-center justify-between">
-            <div>
-              <div className="font-semibold text-[16px]">{wk.name}</div>
-              <div className="text-[13px] text-iossecondary">{wk.exercises.length} exercises</div>
+          <Card key={wk.id} className="p-4 flex flex-col gap-2">
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="font-semibold text-[16px]">{wk.name}</div>
+                <div className="text-[13px] text-iossecondary">{wk.exercises.length} exercises</div>
+              </div>
+              <div className="flex items-center gap-1">
+                <IconButton onClick={() => onEdit(wk.id)}><GearIcon className="w-4 h-4" /></IconButton>
+                <IconButton onClick={() => onDelete(wk.id)} className="text-iosred"><TrashIcon className="w-4 h-4" /></IconButton>
+              </div>
             </div>
-            <div className="flex items-center gap-1">
-              <IconButton onClick={() => onEdit(wk.id)}><GearIcon className="w-4 h-4" /></IconButton>
-              <IconButton onClick={() => onDelete(wk.id)} className="text-iosred"><TrashIcon className="w-4 h-4" /></IconButton>
-            </div>
+            <label className="flex items-center justify-between gap-2 text-[13px] font-medium text-iossecondary pt-2 border-t border-iosseparator">
+              <span>Switch to it automatically after a finish</span>
+              <input type="checkbox" checked={wk.inRotation !== false}
+                onChange={e => onToggleRotation(wk.id, e.target.checked)}
+                className="w-5 h-5 accent-iosblue shrink-0" />
+            </label>
           </Card>
         ))}
       </div>
@@ -1469,7 +1501,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
 }
 
 function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExercise, onToggleExercise, onResetProgress, onSetActiveWorkout,
-  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise, autoRunWorkoutId, onStartAuto, onStopAuto }) {
+  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise, autoRunWorkoutId, onStartAuto, onStopAuto, onCopyExercise, onToggleRotation }) {
   const [view, setView] = useState('run'); // run | manage | edit
   const [editingId, setEditingId] = useState(null);
 
@@ -1495,8 +1527,10 @@ function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExerci
     return (
       <WorkoutEditView
         workout={wk}
+        workouts={workouts}
         onCancel={() => setView('manage')}
         onSave={(saved) => { onSaveWorkout(saved); setView('manage'); }}
+        onCopyExercise={onCopyExercise}
       />
     );
   }
@@ -1509,6 +1543,7 @@ function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExerci
         onEdit={(id) => { setEditingId(id); setView('edit'); }}
         onAdd={() => { setEditingId(null); setView('edit'); }}
         onDelete={(id) => { if (confirm('Delete this workout?')) onDeleteWorkout(id); }}
+        onToggleRotation={onToggleRotation}
       />
     );
   }
@@ -1673,8 +1708,15 @@ function App() {
       const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress }, currentExerciseOverride, autoRunWorkoutId };
 
       if (checked && allDone) {
-        const idx = s.workouts.findIndex(w => w.id === workoutId);
-        const nextWorkout = s.workouts.length > 1 ? s.workouts[(idx + 1) % s.workouts.length] : null;
+        // Auto-advance only cycles within the workouts marked "in rotation"
+        // (Workout A/B by default) — a workout outside that set (e.g. one
+        // you imported) is never switched into automatically; you pick it
+        // yourself when you actually want it.
+        const rotation = s.workouts.filter(w => w.inRotation !== false);
+        const idxInRotation = rotation.findIndex(w => w.id === workoutId);
+        const nextWorkout = (idxInRotation !== -1 && rotation.length > 1)
+          ? rotation[(idxInRotation + 1) % rotation.length]
+          : null;
         celebrate(workout.name, nextWorkout ? nextWorkout.name : null);
         setTimeout(() => {
           setState(s2 => {
@@ -1712,6 +1754,25 @@ function App() {
       const workouts = exists ? s.workouts.map(w => w.id === workout.id ? workout : w) : [...s.workouts, workout];
       return { ...s, workouts, activeWorkoutId: exists ? s.activeWorkoutId : workout.id };
     });
+  }
+
+  function copyExerciseToWorkout(exercise, targetWorkoutId) {
+    setState(s => ({
+      ...s,
+      workouts: s.workouts.map(w => w.id === targetWorkoutId
+        // supersetWithNext is reset — the exercise it was paired with lives
+        // in the source workout, not this one, so pairing it here by default
+        // would silently (and wrongly) merge it with whatever ends up next.
+        ? { ...w, exercises: [...w.exercises, { ...exercise, id: uid('ex'), supersetWithNext: false }] }
+        : w),
+    }));
+  }
+
+  function toggleWorkoutRotation(workoutId, inRotation) {
+    setState(s => ({
+      ...s,
+      workouts: s.workouts.map(w => w.id === workoutId ? { ...w, inRotation } : w),
+    }));
   }
 
   function deleteWorkout(id) {
@@ -1780,6 +1841,8 @@ function App() {
           autoRunWorkoutId={state.autoRunWorkoutId}
           onStartAuto={startAuto}
           onStopAuto={stopAuto}
+          onCopyExercise={copyExerciseToWorkout}
+          onToggleRotation={toggleWorkoutRotation}
         />
       </div>
 
