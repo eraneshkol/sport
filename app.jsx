@@ -617,19 +617,17 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         }
       } catch (e) { /* fall back below */ }
       if (!streamed) compressor.connect(ctx.destination);
-      // iOS only keeps this tab's timer/audio actually running once it's no
-      // longer the frontmost app (e.g. you switched to Spotify) for a
-      // session categorized for continuous background audio — that's
-      // 'playback'. 'ambient'/'transient' avoid ever fighting another app
-      // for focus, but the tradeoff turned out to be worse: iOS is then
-      // free to suspend this page while backgrounded, so rounds finish
-      // silently and every queued sound only fires in a burst once you
-      // switch back — which is what was causing the AirPods glitch, not
-      // the category itself. A workout timer that goes silent in the
-      // background isn't useful, so this trades a brief, expected duck of
-      // other audio when a cue plays (normal for any timer/alarm app) for
-      // actually being reliable while backgrounded.
-      try { if ('audioSession' in navigator) navigator.audioSession.type = 'playback'; } catch (e) {}
+      // 'playback' is exclusive on iOS: activating it PAUSES Spotify/Music
+      // outright, immediately, not just a brief duck — confirmed too
+      // disruptive to keep. 'transient' is the category actually meant for
+      // sounds that layer on top of other audio without taking it over.
+      // The real tradeoff this leaves unsolved: the web platform has no
+      // category that is both non-exclusive AND guaranteed to keep running
+      // once another app is frontmost, so under 'transient' iOS can suspend
+      // this page while backgrounded and a missed round-end only plays (in
+      // a burst) once you switch back. Not pausing your music is the
+      // priority for now — see the reply in chat for the full tradeoff.
+      try { if ('audioSession' in navigator) navigator.audioSession.type = 'transient'; } catch (e) {}
     }
     if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
     if (audioElRef.current && audioElRef.current.paused) {
