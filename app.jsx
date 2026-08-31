@@ -889,7 +889,9 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
     const isLastRound = round >= effectiveRef.current.rounds;
     if (phase === 'work') {
       if (groupMemberIndexRef.current < groupRef.current.length - 1) {
-        return `Next · ${groupRef.current[groupMemberIndexRef.current + 1].name}`;
+        const upNext = groupRef.current[groupMemberIndexRef.current + 1];
+        const weight = upNext.weightKg != null ? ` (${formatWeightKg(upNext.weightKg)} kg ea)` : '';
+        return `Next · ${upNext.name}${weight}`;
       }
       if (effectiveRef.current.restSec > 0) return `Next · Rest ${fmtTime(effectiveRef.current.restSec)}`;
       return isLastRound ? 'Last interval' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
@@ -946,7 +948,12 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
       {autoRun && (
         <div className="flex items-center justify-center gap-2 -mt-2">
           <span className="text-[11px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2.5 py-1 rounded-full">Auto</span>
-          {nextExercise && <span className="text-[12px] text-iossecondary">Up next: {nextExercise.name}</span>}
+          {nextExercise && (
+            <span className="text-[12px] text-iossecondary">
+              Up next: {nextExercise.name}
+              {nextExercise.weightKg != null && ` (${formatWeightKg(nextExercise.weightKg)} kg ea)`}
+            </span>
+          )}
           <button onClick={onStopAuto} className="text-[12px] text-iosred font-medium">Stop</button>
         </div>
       )}
