@@ -8,17 +8,78 @@ function uid(prefix) {
   return prefix + '-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
 }
 
+// An exercise carries its own complete set of parameters — there is no
+// category (or any other shared timing profile) sitting behind it anymore.
+// That is the whole point of this model: adding, removing or reordering an
+// exercise can never change how any *other* exercise runs, and what the
+// Timer counts down is always exactly what the exercise itself says.
+//
 // sides: 'together' (both arms/legs work at once, e.g. a squat or bench
 // press) or 'alternating' (you work one side, then the other, e.g. a
-// one-arm row or reverse lunges) — drives which timing profile the Timer
-// auto-switches to when this exercise is the current one. `sets` is how
-// many rounds Auto mode (and manual current-exercise linking) runs for
-// this exercise before moving on, overriding the category's own rounds.
-// workSec/restSec are null by default, meaning "use the category's timing
-// (or its alt timing, if this exercise is 'alternating')" — set to a number
-// to override the category for this exercise specifically.
-function ex(name, description, sides = 'together', sets = 3, workSec = null, restSec = null, weightKg = null, supersetWithNext = false) {
-  return { id: uid('ex'), name, description, sides, sets, workSec, restSec, weightKg, supersetWithNext };
+// one-arm row or reverse lunges). It labels the exercise and seeds the
+// default work/rest times of a new one — nothing reads it at runtime.
+// sets: how many work/rest rounds this exercise runs before it's done.
+// workSec/restSec: the length of the work and rest halves of one round.
+const DEFAULT_WORK_SEC = 80;
+const DEFAULT_REST_SEC = 30;
+// One side at a time takes longer to work through and needs less rest
+// afterwards, so a new 'alternating' exercise starts from these instead.
+const DEFAULT_ALT_WORK_SEC = 105;
+const DEFAULT_ALT_REST_SEC = 20;
+const DEFAULT_SETS = 3;
+
+function defaultWorkSecFor(sides) { return sides === 'alternating' ? DEFAULT_ALT_WORK_SEC : DEFAULT_WORK_SEC; }
+function defaultRestSecFor(sides) { return sides === 'alternating' ? DEFAULT_ALT_REST_SEC : DEFAULT_REST_SEC; }
+
+function ex(name, description, sides = 'together', sets = DEFAULT_SETS, workSec = null, restSec = null, weightKg = null, supersetWithNext = false) {
+  return {
+    id: uid('ex'),
+    name,
+    description,
+    sides,
+    sets,
+    workSec: workSec != null ? workSec : defaultWorkSecFor(sides),
+    restSec: restSec != null ? restSec : defaultRestSecFor(sides),
+    weightKg,
+    supersetWithNext,
+  };
+}
+
+// Every read of an exercise's parameters goes through these, so a
+// half-filled exercise still runs with something sane instead of NaN.
+function exWorkSec(e) { return e && e.workSec != null ? e.workSec : DEFAULT_WORK_SEC; }
+function exRestSec(e) { return e && e.restSec != null ? e.restSec : DEFAULT_REST_SEC; }
+function exSets(e) { return e && e.sets != null ? e.sets : DEFAULT_SETS; }
+
+// The one place an exercise is turned back into a fully-shaped, in-range
+// object — used by the settings sheet, the workout editor and the state
+// migration alike, so every path into storage produces the same shape.
+function normalizeExercise(e) {
+  const sides = e.sides === 'alternating' ? 'alternating' : 'together';
+  // Number(null) is 0, not NaN, so absent/blank has to be caught before the
+  // conversion — otherwise a missing rest time would silently become "no rest".
+  const work = e.workSec == null || e.workSec === '' ? NaN : Number(e.workSec);
+  const rest = e.restSec == null || e.restSec === '' ? NaN : Number(e.restSec);
+  return {
+    id: e.id || uid('ex'),
+    name: (e.name || '').trim(),
+    description: (e.description || '').trim(),
+    sides,
+    sets: clamp(Number(e.sets) || DEFAULT_SETS, 1, 50),
+    workSec: clamp(Number.isFinite(work) && work > 0 ? work : defaultWorkSecFor(sides), 1, 3599),
+    restSec: clamp(Number.isFinite(rest) && rest >= 0 ? rest : defaultRestSecFor(sides), 0, 3599),
+    weightKg: e.weightKg == null || Number.isNaN(Number(e.weightKg)) ? null : Number(e.weightKg),
+    supersetWithNext: !!e.supersetWithNext,
+  };
+}
+
+// One-line "what this exercise does" recap, shown wherever an exercise is
+// listed but not opened — the checklist card and the workout editor.
+function exerciseSummary(e) {
+  const parts = [`Work ${fmtTime(exWorkSec(e))}`, `Rest ${fmtTime(exRestSec(e))}`, `${exSets(e)} sets`];
+  if (e.sides === 'alternating') parts.push('One side');
+  if (e.weightKg != null) parts.push(`${formatWeightKg(e.weightKg)} kg`);
+  return parts.join(' · ');
 }
 
 // Weight is always stored in kg — entry can happen in kg or lb, converted
@@ -115,23 +176,9 @@ function defaultWorkouts() {
   ];
 }
 
-function defaultCategories() {
-  return [
-    // altWorkSec/altRestSec are the timing used when the current exercise is
-    // tagged 'alternating' (one side at a time needs longer work, shorter
-    // rest than a 'together' exercise). Left unset on Ab Time/Walking, so
-    // those two behave exactly as before — nothing there ever changes.
-    { id: 'cat-weights', name: 'Weight Press', icon: 'dumbbell', workSec: 80, restSec: 30, rounds: 3, altWorkSec: 105, altRestSec: 20 },
-    { id: 'cat-abs', name: 'Ab Time', icon: 'activity', workSec: 40, restSec: 20, rounds: 4 },
-    { id: 'cat-walk', name: 'Walking', icon: 'footprints', workSec: 300, restSec: 60, rounds: 2 },
-  ];
-}
-
 function defaultState() {
   const workouts = defaultWorkouts();
   return {
-    selectedCategoryId: 'cat-weights',
-    categories: defaultCategories(),
     workouts,
     workoutProgress: {},
     activeWorkoutId: workouts[0].id,
@@ -155,16 +202,19 @@ function loadRawState() {
 // always end up with a fully-shaped, usable object.
 function migrateState(loaded) {
   const state = loaded ? { ...loaded } : defaultState();
-  if (!state.categories || state.categories.length === 0) state.categories = defaultCategories();
-  // Backfill alternating-sides timing onto the default Weight Press category
-  // for installs saved before that field existed — any other category is
-  // left alone, since alt timing is opt-in (configured in the Categories tab).
-  state.categories = state.categories.map(c =>
-    (c.id === 'cat-weights' && c.altWorkSec == null) ? { ...c, altWorkSec: 105, altRestSec: 20 } : c
-  );
-  if (!state.categories.find(c => c.id === state.selectedCategoryId)) {
-    state.selectedCategoryId = state.categories[0].id;
-  }
+  // Categories are gone: an exercise that used to borrow its timing from one
+  // now owns that timing outright. Which category to bake in is decided the
+  // same way Auto mode used to pick one — the one with alternating-sides
+  // timing configured (the weights profile this app is actually used with),
+  // else whatever was selected last — so a saved install keeps running with
+  // the exact numbers it ran with before this refactor.
+  const legacyCats = Array.isArray(state.categories) ? state.categories : [];
+  const legacyCat = legacyCats.find(c => c.altWorkSec != null)
+    || legacyCats.find(c => c.id === state.selectedCategoryId)
+    || legacyCats[0]
+    || null;
+  delete state.categories;
+  delete state.selectedCategoryId;
   if (!state.workouts || state.workouts.length === 0) state.workouts = defaultWorkouts();
   // Translate any leftover Hebrew exercise cues from earlier versions of
   // this app into English, without touching text the user typed themselves.
@@ -181,10 +231,20 @@ function migrateState(loaded) {
       // data) — once `sides` exists, it's the user's real choice and is
       // never second-guessed by name again.
       const sides = e.sides == null ? (DEFAULT_SIDES_BY_NAME[e.name] || 'together') : e.sides;
-      const sets = e.sets == null ? 3 : e.sets;
-      const weightKg = e.weightKg === undefined ? null : e.weightKg;
-      const supersetWithNext = !!e.supersetWithNext;
-      return { ...e, description: translated || e.description, sides, sets, weightKg, supersetWithNext };
+      const alt = sides === 'alternating';
+      // null work/rest used to mean "inherit from the category" — that's
+      // what gets resolved into a real number here, once.
+      const inheritedWork = legacyCat ? ((alt && legacyCat.altWorkSec != null) ? legacyCat.altWorkSec : legacyCat.workSec) : null;
+      const inheritedRest = legacyCat ? ((alt && legacyCat.altRestSec != null) ? legacyCat.altRestSec : legacyCat.restSec) : null;
+      return normalizeExercise({
+        ...e,
+        description: translated || e.description,
+        sides,
+        sets: e.sets != null ? e.sets : (legacyCat && legacyCat.rounds) || DEFAULT_SETS,
+        workSec: e.workSec != null ? e.workSec : inheritedWork,
+        restSec: e.restSec != null ? e.restSec : inheritedRest,
+        weightKg: e.weightKg === undefined ? null : e.weightKg,
+      });
     }),
   }));
   if (!state.workoutProgress) state.workoutProgress = {};
@@ -226,7 +286,6 @@ const ChevronLeftIcon = (p) => <Icon {...p}><path d="M15 18l-6-6 6-6" /></Icon>;
 const CheckIcon = (p) => <Icon {...p} fill="none" strokeWidth="2.4"><path d="M5 13l4 4L19 7" /></Icon>;
 const ClockIcon = (p) => <Icon {...p}><circle cx="12" cy="12" r="9" /><path d="M12 7v5l3.5 2" /></Icon>;
 const ChecklistIcon = (p) => <Icon {...p}><path d="M9 6h11M9 12h11M9 18h11" /><path d="m3.5 6 1.2 1.2L6.8 5" /><path d="m3.5 12 1.2 1.2L6.8 11" /><path d="m3.5 18 1.2 1.2L6.8 17" /></Icon>;
-const GridIcon = (p) => <Icon {...p}><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.8" /><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.8" /><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.8" /><rect x="13" y="13" width="7.5" height="7.5" rx="1.8" /></Icon>;
 
 // ===================== Small shared UI =====================
 
@@ -249,7 +308,6 @@ function TabBar({ tab, onChange }) {
   const items = [
     { value: 'workouts', label: 'Workouts', Icon: ChecklistIcon },
     { value: 'timer', label: 'Timer', Icon: ClockIcon },
-    { value: 'categories', label: 'Categories', Icon: GridIcon },
   ];
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/85 backdrop-blur-md border-t border-iosseparator"
@@ -457,12 +515,12 @@ function CountRow({ label, value, max, onCommit }) {
 const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' };
 const COUNTDOWN_SEC = 3;
 
-function TimerTab({ category, categories, onSelectCategory, soundEnabled, onToggleSound, currentExercise,
+function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
   currentGroup, nextExercise, autoRun, onAutoExerciseComplete, onStopAuto }) {
   const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
-  const remainingRef = useRef(category.workSec);
-  const phaseTotalRef = useRef(category.workSec);
+  const remainingRef = useRef(DEFAULT_WORK_SEC);
+  const phaseTotalRef = useRef(DEFAULT_WORK_SEC);
   const phaseEndAtRef = useRef(0);
   const runningRef = useRef(false);
   const intervalRef = useRef(null);
@@ -470,7 +528,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   const compressorRef = useRef(null);
   const audioElRef = useRef(null);
   const wakeLockRef = useRef(null);
-  const effectiveRef = useRef({ workSec: category.workSec, restSec: category.restSec });
+  const effectiveRef = useRef({ workSec: DEFAULT_WORK_SEC, restSec: DEFAULT_REST_SEC, rounds: DEFAULT_SETS });
   // Which member of a superset group is currently in its work phase — always
   // 0 for a plain single exercise. Reset to 0 whenever a fresh round begins.
   const groupMemberIndexRef = useRef(0);
@@ -499,31 +557,39 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   // started with, and only the *next* phase transition picks up whatever is
   // newly current.
   groupRef.current = (currentGroup && currentGroup.length) ? currentGroup : (currentExercise ? [currentExercise] : []);
+  // Every number the engine runs on comes straight off the exercise itself.
   function effectiveFor(member) {
-    const usingAlt = !!(member && member.sides === 'alternating' && category.altWorkSec != null && category.altRestSec != null);
-    const hasExerciseTiming = !!(member && member.workSec != null && member.restSec != null);
-    return {
-      workSec: hasExerciseTiming ? member.workSec : (usingAlt ? category.altWorkSec : category.workSec),
-      restSec: hasExerciseTiming ? member.restSec : (usingAlt ? category.altRestSec : category.restSec),
-    };
+    return { workSec: exWorkSec(member), restSec: exRestSec(member) };
   }
   const activeMember = groupRef.current[groupMemberIndexRef.current] || groupRef.current[0] || currentExercise;
   effectiveRef.current = {
     ...effectiveFor(activeMember),
-    rounds: (groupRef.current[0] && groupRef.current[0].sets) ? groupRef.current[0].sets : category.rounds,
+    // A superset takes its round count from the exercise that leads it.
+    rounds: exSets(groupRef.current[0] || activeMember),
   };
 
   useEffect(() => {
+    return () => clearInterval(intervalRef.current);
+  }, []);
+
+  // Moving to a different exercise (you tapped another one, checked this one
+  // off, or edited which exercise leads the group) rewinds the timer to the
+  // start of that exercise — but never mid-phase: a phase that is actually
+  // running always finishes on the numbers it started with, and only the
+  // next phase picks up anything new. That is what keeps editing an exercise
+  // from breaking a run already in progress.
+  const leaderId = (groupRef.current[0] && groupRef.current[0].id) || null;
+  useEffect(() => {
+    if (runningRef.current) return;
     clearInterval(intervalRef.current);
-    runningRef.current = false;
     phaseRef.current = 'idle';
     roundRef.current = 1;
     groupMemberIndexRef.current = 0;
     phaseTotalRef.current = effectiveRef.current.workSec;
     remainingRef.current = effectiveRef.current.workSec;
     forceRender();
-    return () => clearInterval(intervalRef.current);
-  }, [category.id, category.workSec, category.restSec, category.rounds]);
+    // eslint-disable-next-line
+  }, [leaderId]);
 
   const phase = phaseRef.current;
   const round = roundRef.current;
@@ -894,7 +960,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         return `Next · ${upNext.name}${weight}`;
       }
       if (effectiveRef.current.restSec > 0) return `Next · Rest ${fmtTime(effectiveRef.current.restSec)}`;
-      return isLastRound ? 'Last interval' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
+      return isLastRound ? 'Last set' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
     }
     if (phase === 'rest') return isLastRound ? 'Almost there' : `Next · Work ${fmtTime(effectiveRef.current.workSec)}`;
     if (phase === 'idle') return `Starts with Work ${fmtTime(effectiveRef.current.workSec)}`;
@@ -902,7 +968,6 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   }
 
   const isSuperset = groupRef.current.length > 1;
-  const showExerciseLink = !!(currentExercise && category.altWorkSec != null && category.altRestSec != null);
 
   return (
     <div className="flex flex-col gap-5">
@@ -913,11 +978,13 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
         </IconButton>
       </div>
 
-      <div className="flex justify-center">
-        <select value={category.id} onChange={e => onSelectCategory(e.target.value)}
-          className="bg-iosseparator/70 rounded-full pl-4 pr-4 py-2 text-[16px] font-semibold outline-none text-center">
-          {categories.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-        </select>
+      <div className="flex flex-col items-center gap-0.5">
+        <div className="text-[19px] font-bold text-center">
+          {activeMember ? activeMember.name : 'No exercise selected'}
+        </div>
+        <div className="text-[12px] text-iossecondary">
+          {activeMember ? (workoutName || '') : 'Pick one in the Workouts tab'}
+        </div>
       </div>
 
       <div className="flex items-center justify-center gap-2 flex-wrap">
@@ -930,20 +997,21 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
           <span className="text-[13px] font-semibold tabular-nums">{fmtTime(effectiveRef.current.restSec)}</span>
         </div>
         <div className="flex items-center gap-1.5 bg-ioscard shadow-[0_4px_20px_rgba(0,0,0,0.04)] rounded-full px-3.5 py-1.5">
-          <span className="text-[11px] text-iossecondary font-medium">Rounds</span>
+          <span className="text-[11px] text-iossecondary font-medium">Sets</span>
           <span className="text-[13px] font-semibold tabular-nums">{effectiveRef.current.rounds}</span>
         </div>
       </div>
       {isSuperset ? (
         <div className="text-center text-[12px] text-iosorange font-medium -mt-4">
-          Superset · {activeMember.name} ({groupMemberIndexRef.current + 1}/{groupRef.current.length})
+          Superset · {groupMemberIndexRef.current + 1} of {groupRef.current.length} · {groupRef.current.map(m => m.name).join(' + ')}
         </div>
-      ) : showExerciseLink ? (
-        <div className="text-center text-[12px] text-iosblue font-medium -mt-4">
-          Now: {currentExercise.name} · {currentExercise.sides === 'alternating' ? 'One side at a time' : 'Both sides together'}
+      ) : activeMember ? (
+        <div className="text-center text-[12px] text-iossecondary -mt-4">
+          {activeMember.sides === 'alternating' ? 'One side at a time' : 'Both sides together'}
+          {activeMember.weightKg != null && ` · ${formatWeightKg(activeMember.weightKg)} kg ea`}
         </div>
       ) : (
-        <div className="text-center text-[11px] text-iossecondary -mt-4">Edit times in the Categories tab</div>
+        <div className="text-center text-[11px] text-iossecondary -mt-4">Tap the ⚙ next to an exercise to set its times</div>
       )}
       {autoRun && (
         <div className="flex items-center justify-center gap-2 -mt-2">
@@ -969,7 +1037,7 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-1">
             <div className="text-[13px] font-semibold uppercase tracking-wide text-iossecondary">{phaseLabel}</div>
             <div className="text-[56px] font-bold font-mono tabular-nums leading-none">{fmtTime(remaining)}</div>
-            <div className="text-[13px] text-iossecondary mt-1">Round {round} of {effectiveRef.current.rounds}</div>
+            <div className="text-[13px] text-iossecondary mt-1">Set {round} of {effectiveRef.current.rounds}</div>
             <div className="text-[12px] text-iossecondary mt-2">{nextUpLabel()}</div>
           </div>
           {phase === 'countdown' && (
@@ -1014,154 +1082,163 @@ function TimerTab({ category, categories, onSelectCategory, soundEnabled, onTogg
   );
 }
 
-// ===================== Categories Tab =====================
-
-function CategoriesTab({ categories, selectedCategoryId, onUpdateCategory, onRenameCategory, onEnsureNamed, onAddCategory, onDeleteCategory }) {
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="flex items-center justify-between">
-        <h1 className="text-[28px] font-bold">Categories</h1>
-        <IconButton onClick={onAddCategory} className="bg-iosblue text-white">
-          <PlusIcon className="w-5 h-5" />
-        </IconButton>
-      </div>
-
-      <div className="flex flex-col gap-3">
-        {categories.map(cat => (
-          <Card key={cat.id} className={`p-4 ${cat.id === selectedCategoryId ? 'ring-2 ring-iosblue' : ''}`}>
-            <div className="flex items-center justify-between mb-3">
-              <input
-                value={cat.name}
-                onChange={e => onRenameCategory(cat.id, e.target.value)}
-                onBlur={() => onEnsureNamed(cat.id)}
-                className="text-[17px] font-semibold bg-transparent outline-none flex-1 min-w-0"
-              />
-              <IconButton onClick={() => onDeleteCategory(cat.id)} className="text-iosred shrink-0">
-                <TrashIcon className="w-4 h-4" />
-              </IconButton>
-            </div>
-            <div className="grid grid-cols-3 gap-2">
-              <TimeRow label="Work Time" sec={cat.workSec} onCommit={v => onUpdateCategory(cat.id, { workSec: v })} />
-              <TimeRow label="Rest Time" sec={cat.restSec} onCommit={v => onUpdateCategory(cat.id, { restSec: v })} />
-              <CountRow label="Rounds" value={cat.rounds} max={50}
-                onCommit={v => onUpdateCategory(cat.id, { rounds: v })} />
-            </div>
-
-            <div className="mt-3 pt-3 border-t border-iosseparator">
-              <label className="flex items-center justify-between gap-2 text-[13px] font-medium text-iossecondary">
-                <span>Different timing for one-side-at-a-time exercises</span>
-                <input type="checkbox" checked={cat.altWorkSec != null && cat.altRestSec != null}
-                  onChange={e => onUpdateCategory(cat.id, e.target.checked
-                    // Seed with values that are actually different from Work/Rest
-                    // above (longer work, shorter rest) — starting identical would
-                    // silently do nothing until the user also edited these below.
-                    ? { altWorkSec: cat.workSec + 25, altRestSec: Math.max(5, cat.restSec - 10) }
-                    : { altWorkSec: null, altRestSec: null })}
-                  className="w-5 h-5 accent-iosblue shrink-0" />
-              </label>
-              {cat.altWorkSec != null && cat.altRestSec != null && (
-                <div className="grid grid-cols-2 gap-2 mt-2">
-                  <TimeRow label="Alt Work" sec={cat.altWorkSec} onCommit={v => onUpdateCategory(cat.id, { altWorkSec: v })} />
-                  <TimeRow label="Alt Rest" sec={cat.altRestSec} onCommit={v => onUpdateCategory(cat.id, { altRestSec: v })} />
-                </div>
-              )}
-            </div>
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
-}
-
 // ===================== Workouts Tab =====================
 
-function ExerciseEditRow({ exercise, onChange, onDelete, isLast, isGroupContinuation, otherWorkouts, onCopyTo }) {
-  const hasCustomTiming = exercise.workSec != null && exercise.restSec != null;
-  // Purely a display/entry choice — the exercise itself always stores
-  // weightKg, so switching this doesn't touch the saved value, only how
-  // the number in the box below is interpreted while typing.
+// Press-and-hold detection shared by the checklist cards (hold to enter
+// reorder mode) — a plain tap still fires onClick, and any real finger
+// movement cancels the hold so scrolling the list never triggers it.
+function useLongPress(onLongPress, onClick) {
+  const pressTimer = useRef(null);
+  const longPressFired = useRef(false);
+  const startPos = useRef({ x: 0, y: 0 });
+
+  function clearPressTimer() {
+    clearTimeout(pressTimer.current);
+    pressTimer.current = null;
+  }
+  return {
+    onClick: () => {
+      // Swallow the click the browser fires after a long press.
+      if (longPressFired.current) { longPressFired.current = false; return; }
+      if (onClick) onClick();
+    },
+    onPointerDown: (e) => {
+      longPressFired.current = false;
+      startPos.current = { x: e.clientX, y: e.clientY };
+      pressTimer.current = setTimeout(() => {
+        pressTimer.current = null;
+        longPressFired.current = true;
+        if (onLongPress) onLongPress();
+      }, 500);
+    },
+    onPointerMove: (e) => {
+      if (!pressTimer.current) return;
+      const dx = e.clientX - startPos.current.x;
+      const dy = e.clientY - startPos.current.y;
+      if (Math.hypot(dx, dy) > 10) clearPressTimer();
+    },
+    onPointerUp: clearPressTimer,
+    onPointerCancel: clearPressTimer,
+    onPointerLeave: clearPressTimer,
+  };
+}
+
+// The single place an exercise is edited, opened by the ⚙ next to it
+// wherever exercises are listed. Everything that decides how this exercise
+// looks and how the Timer runs it lives in here — there is no second screen
+// (and no category) holding some of it.
+function ExerciseSettingsSheet({ exercise, showSuperset, otherWorkouts, onCopyTo, onCancel, onSave, onDelete }) {
+  const [draft, setDraft] = useState(() => ({ ...exercise }));
+  // Purely a display/entry choice — the exercise always stores weightKg, so
+  // flipping this only changes how the number in the box is read while typing.
   const [weightUnit, setWeightUnit] = useState('kg');
-  const weightDisplay = exercise.weightKg == null ? '' :
-    (weightUnit === 'kg' ? formatWeightKg(exercise.weightKg) : formatWeightKg(kgToLb(exercise.weightKg)));
+
+  function patch(p) { setDraft(d => ({ ...d, ...p })); }
+
+  const weightDisplay = draft.weightKg == null ? ''
+    : (weightUnit === 'kg' ? formatWeightKg(draft.weightKg) : formatWeightKg(kgToLb(draft.weightKg)));
 
   function handleWeightChange(raw) {
-    if (raw.trim() === '') { onChange({ ...exercise, weightKg: null }); return; }
+    if (raw.trim() === '') { patch({ weightKg: null }); return; }
     const n = Number(raw);
     if (Number.isNaN(n)) return;
-    onChange({ ...exercise, weightKg: weightUnit === 'kg' ? n : lbToKg(n) });
+    patch({ weightKg: weightUnit === 'kg' ? n : lbToKg(n) });
+  }
+
+  // Switching sides re-seeds the times only while they are still the
+  // untouched defaults of the other mode, so an exercise whose times you
+  // already dialled in never silently loses them.
+  function handleSides(sides) {
+    setDraft(d => {
+      const untouched = exWorkSec(d) === defaultWorkSecFor(d.sides) && exRestSec(d) === defaultRestSecFor(d.sides);
+      return untouched
+        ? { ...d, sides, workSec: defaultWorkSecFor(sides), restSec: defaultRestSecFor(sides) }
+        : { ...d, sides };
+    });
+  }
+
+  function handleDone() {
+    const clean = normalizeExercise(draft);
+    if (!clean.name) { alert('Please give the exercise a name'); return; }
+    onSave(clean);
   }
 
   return (
-    <div className="flex flex-col gap-2 py-3 border-b border-iosseparator last:border-0">
-      {isGroupContinuation && (
-        <div className="text-[11px] text-iosorange font-semibold">↳ Superset with exercise above — shares its rounds</div>
-      )}
-      <div className="flex items-center gap-2">
-        <input value={exercise.name} placeholder="Exercise name"
-          onChange={e => onChange({ ...exercise, name: e.target.value })}
-          className="flex-1 font-semibold text-[16px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue" />
-        <IconButton onClick={onDelete} className="text-iosred"><TrashIcon className="w-4 h-4" /></IconButton>
-      </div>
-      <input value={exercise.description} placeholder="How to identify (optional)"
-        onChange={e => onChange({ ...exercise, description: e.target.value })}
-        className="text-[16px] bg-iosbg rounded-lg px-3 py-2 outline-none focus:ring-2 focus:ring-iosblue text-iossecondary" />
-      <div className="flex items-center gap-2 flex-wrap">
-        <SegmentedControl
-          options={[{ value: 'together', label: 'Both sides together' }, { value: 'alternating', label: 'One side at a time' }]}
-          value={exercise.sides === 'alternating' ? 'alternating' : 'together'}
-          onChange={sides => onChange({ ...exercise, sides })}
-        />
-        {!isGroupContinuation && (
-          <div className="flex flex-col gap-0.5 items-center bg-iosbg rounded-xl px-2 py-1.5 shrink-0">
-            <label className="text-[10px] text-iossecondary font-medium">Sets</label>
-            <input type="number" min="1" max="20" value={exercise.sets == null ? 3 : exercise.sets}
-              onChange={e => onChange({ ...exercise, sets: clamp(Number(e.target.value) || 1, 1, 20) })}
-              className="w-10 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+    <div className="fixed inset-0 z-[45] flex items-end" onClick={onCancel}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div onClick={e => e.stopPropagation()}
+        className="relative w-full max-w-md mx-auto bg-white rounded-t-3xl shadow-2xl animate-[slideUp_0.25s_ease] flex flex-col max-h-[88vh]"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-iosseparator shrink-0">
+          <button onClick={onCancel} className="text-iosblue text-[16px] px-1">Cancel</button>
+          <div className="font-semibold text-[16px]">Exercise</div>
+          <button onClick={handleDone} className="text-iosblue font-semibold text-[16px] px-1">Done</button>
+        </div>
+
+        <div className="overflow-y-auto px-4 py-4 flex flex-col gap-3">
+          <input value={draft.name} placeholder="Exercise name" autoFocus={!draft.name}
+            onChange={e => patch({ name: e.target.value })}
+            className="font-semibold text-[16px] bg-iosbg rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-iosblue" />
+          <input value={draft.description || ''} placeholder="How to identify (optional)"
+            onChange={e => patch({ description: e.target.value })}
+            className="text-[15px] bg-iosbg rounded-xl px-3 py-2.5 outline-none focus:ring-2 focus:ring-iosblue text-iossecondary" />
+
+          <SegmentedControl
+            options={[{ value: 'together', label: 'Both sides together' }, { value: 'alternating', label: 'One side at a time' }]}
+            value={draft.sides === 'alternating' ? 'alternating' : 'together'}
+            onChange={handleSides}
+          />
+
+          <div className="grid grid-cols-3 gap-2">
+            <TimeRow label="Work Time" sec={exWorkSec(draft)} onCommit={v => patch({ workSec: v })} />
+            <TimeRow label="Rest Time" sec={exRestSec(draft)} onCommit={v => patch({ restSec: v })} />
+            <CountRow label="Sets" value={exSets(draft)} max={50} onCommit={v => patch({ sets: v })} />
           </div>
-        )}
-        <div className="flex flex-col gap-0.5 items-center bg-iosbg rounded-xl px-2 py-1.5 shrink-0">
-          <label className="text-[10px] text-iossecondary font-medium whitespace-nowrap">Weight (per DB)</label>
-          <div className="flex items-center gap-1">
-            <input type="number" min="0" step="0.5" placeholder="—" value={weightDisplay}
-              onChange={e => handleWeightChange(e.target.value)}
-              className="w-14 text-center bg-white rounded-md py-0.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
-            <button type="button" onClick={() => setWeightUnit(u => u === 'kg' ? 'lbs' : 'kg')}
-              className="text-[11px] font-semibold text-iosblue px-1.5 py-0.5 rounded-md bg-white">
-              {weightUnit}
+          <div className="text-[11px] text-iossecondary text-center -mt-1">
+            {exSets(draft)} × ({fmtTime(exWorkSec(draft))} work + {fmtTime(exRestSec(draft))} rest)
+          </div>
+
+          <div className="flex items-center justify-between gap-2 bg-iosbg rounded-xl px-3 py-2.5">
+            <span className="text-[14px] font-medium">Weight (per dumbbell)</span>
+            <div className="flex items-center gap-1.5">
+              <input type="number" min="0" step="0.5" placeholder="—" value={weightDisplay}
+                onChange={e => handleWeightChange(e.target.value)}
+                className="w-20 text-center bg-white rounded-lg py-1.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
+              <button type="button" onClick={() => setWeightUnit(u => u === 'kg' ? 'lbs' : 'kg')}
+                className="text-[12px] font-semibold text-iosblue px-2 py-1.5 rounded-lg bg-white">
+                {weightUnit}
+              </button>
+            </div>
+          </div>
+
+          {showSuperset && (
+            <label className="flex items-center justify-between gap-2 bg-iosbg rounded-xl px-3 py-2.5">
+              <span className="text-[14px] font-medium">
+                Superset with next exercise
+                <span className="block text-[11px] text-iossecondary font-normal">Run them back-to-back, rest only after the last one</span>
+              </span>
+              <input type="checkbox" checked={!!draft.supersetWithNext}
+                onChange={e => patch({ supersetWithNext: e.target.checked })}
+                className="w-5 h-5 accent-iosblue shrink-0" />
+            </label>
+          )}
+
+          {otherWorkouts && otherWorkouts.length > 0 && onCopyTo && (
+            <select value="" onChange={e => { if (e.target.value) onCopyTo(normalizeExercise(draft), e.target.value); }}
+              className="bg-iosbg rounded-xl px-3 py-2.5 text-[14px] text-iossecondary outline-none focus:ring-2 focus:ring-iosblue">
+              <option value="" disabled>Duplicate to another workout…</option>
+              {otherWorkouts.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
+            </select>
+          )}
+
+          {onDelete && (
+            <button onClick={onDelete}
+              className="flex items-center justify-center gap-2 py-3 rounded-xl bg-[#FF3B3014] text-iosred font-semibold text-[15px]">
+              <TrashIcon className="w-4 h-4" /> Delete Exercise
             </button>
-          </div>
+          )}
         </div>
       </div>
-      <label className="flex items-center justify-between gap-2 text-[13px] font-medium text-iossecondary mt-1">
-        <span>Custom work/rest time for this exercise</span>
-        <input type="checkbox" checked={hasCustomTiming}
-          onChange={e => onChange(e.target.checked
-            // Toggling on seeds a plain starting point the user then dials
-            // in below; toggling off clears both back to "use the category".
-            ? { ...exercise, workSec: 60, restSec: 30 }
-            : { ...exercise, workSec: null, restSec: null })}
-          className="w-5 h-5 accent-iosblue shrink-0" />
-      </label>
-      {hasCustomTiming && (
-        <div className="grid grid-cols-2 gap-2 mt-1">
-          <TimeRow label="Work Time" sec={exercise.workSec} onCommit={v => onChange({ ...exercise, workSec: v })} />
-          <TimeRow label="Rest Time" sec={exercise.restSec} onCommit={v => onChange({ ...exercise, restSec: v })} />
-        </div>
-      )}
-      {!isLast && (
-        <label className="flex items-center gap-2 text-[13px] text-iossecondary select-none">
-          <input type="checkbox" checked={!!exercise.supersetWithNext}
-            onChange={e => onChange({ ...exercise, supersetWithNext: e.target.checked })} />
-          Superset with next exercise (no rest between them)
-        </label>
-      )}
-      {otherWorkouts && otherWorkouts.length > 0 && (
-        <select value="" onChange={e => { if (e.target.value) onCopyTo(e.target.value); }}
-          className="bg-iosbg rounded-lg px-3 py-2 text-[13px] text-iossecondary outline-none focus:ring-2 focus:ring-iosblue">
-          <option value="" disabled>Duplicate to another workout…</option>
-          {otherWorkouts.map(w => <option key={w.id} value={w.id}>{w.name}</option>)}
-        </select>
-      )}
     </div>
   );
 }
@@ -1170,6 +1247,7 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
   const [name, setName] = useState(workout ? workout.name : '');
   const [exercises, setExercises] = useState(workout ? workout.exercises.map(e => ({ ...e })) : []);
   const [importText, setImportText] = useState('');
+  const [settingsId, setSettingsId] = useState(null); // exercise whose settings sheet is open
 
   function parseWorkoutText(text) {
     const lines = text.split(/\r?\n/)
@@ -1233,24 +1311,16 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
   function save() {
     const cleanName = name.trim();
     if (!cleanName) { alert('Please give the workout a name'); return; }
-    const clean = exercises.filter(e => e.name && e.name.trim())
-      .map(e => ({
-        id: e.id || uid('ex'),
-        name: e.name.trim(),
-        description: (e.description || '').trim(),
-        sides: e.sides === 'alternating' ? 'alternating' : 'together',
-        sets: clamp(Number(e.sets) || 3, 1, 20),
-        workSec: e.workSec != null ? clamp(Number(e.workSec) || 1, 1, 3599) : null,
-        restSec: e.restSec != null ? clamp(Number(e.restSec) || 0, 0, 3599) : null,
-        weightKg: e.weightKg == null || Number.isNaN(Number(e.weightKg)) ? null : Number(e.weightKg),
-        supersetWithNext: !!e.supersetWithNext,
-      }));
+    const clean = exercises.filter(e => e.name && e.name.trim()).map(normalizeExercise);
     if (clean.length === 0) { alert('Add at least one exercise'); return; }
     // A brand-new workout defaults to manual-only (not in rotation); editing
     // an existing one preserves whatever it already had.
     const inRotation = workout ? workout.inRotation !== false : false;
     onSave({ id: workout ? workout.id : uid('wk'), name: cleanName, exercises: clean, inRotation });
   }
+
+  const settingsIndex = exercises.findIndex(e => e.id === settingsId);
+  const settingsEx = settingsIndex === -1 ? null : exercises[settingsIndex];
 
   return (
     <div className="flex flex-col gap-4">
@@ -1273,20 +1343,11 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
       <Card className="p-4">
         {exercises.length === 0 && <div className="text-iossecondary text-[13px] py-2">No exercises yet.</div>}
         {exercises.map((exr, i) => (
-          <ExerciseEditRow key={exr.id} exercise={exr}
-            isLast={i === exercises.length - 1}
+          <ExerciseListRow key={exr.id} exercise={exr}
             isGroupContinuation={i > 0 && !!exercises[i - 1].supersetWithNext}
-            otherWorkouts={(workouts || []).filter(w => w.id !== (workout && workout.id))}
-            onCopyTo={(targetId) => {
-              const target = (workouts || []).find(w => w.id === targetId);
-              if (!target) return;
-              onCopyExercise(exr, targetId);
-              alert(`Copied "${exr.name || 'exercise'}" to ${target.name}.`);
-            }}
-            onChange={updated => setExercises(prev => prev.map((e, idx) => idx === i ? updated : e))}
-            onDelete={() => setExercises(prev => prev.filter((_, idx) => idx !== i))} />
+            onOpenSettings={() => setSettingsId(exr.id)} />
         ))}
-        <button onClick={() => setExercises(prev => prev.concat(ex('', '')))}
+        <button onClick={() => { const created = ex('', ''); setExercises(prev => prev.concat(created)); setSettingsId(created.id); }}
           className="mt-3 w-full py-2.5 rounded-full bg-iosbg text-[14px] font-medium text-iosblue">
           + Add exercise manually
         </button>
@@ -1295,6 +1356,34 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
       <button onClick={save} className="w-full py-3.5 rounded-2xl bg-iosblue text-white font-semibold text-[16px]">
         Save Workout
       </button>
+
+      {settingsEx && (
+        <ExerciseSettingsSheet
+          exercise={settingsEx}
+          showSuperset={settingsIndex < exercises.length - 1}
+          otherWorkouts={(workouts || []).filter(w => w.id !== (workout && workout.id))}
+          onCopyTo={(copied, targetId) => {
+            const target = (workouts || []).find(w => w.id === targetId);
+            if (!target) return;
+            onCopyExercise(copied, targetId);
+            alert(`Copied "${copied.name || 'exercise'}" to ${target.name}.`);
+          }}
+          onCancel={() => {
+            // Backing out of a brand-new, still-empty exercise drops it
+            // again, so cancelling never leaves a blank row behind.
+            if (!settingsEx.name) setExercises(prev => prev.filter(e => e.id !== settingsId));
+            setSettingsId(null);
+          }}
+          onSave={(updated) => {
+            setExercises(prev => prev.map(e => e.id === settingsId ? updated : e));
+            setSettingsId(null);
+          }}
+          onDelete={() => {
+            setExercises(prev => prev.filter(e => e.id !== settingsId));
+            setSettingsId(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -1316,8 +1405,8 @@ function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete, onToggle
                 <div className="text-[13px] text-iossecondary">{wk.exercises.length} exercises</div>
               </div>
               <div className="flex items-center gap-1">
-                <IconButton onClick={() => onEdit(wk.id)}><GearIcon className="w-4 h-4" /></IconButton>
-                <IconButton onClick={() => onDelete(wk.id)} className="text-iosred"><TrashIcon className="w-4 h-4" /></IconButton>
+                <IconButton onClick={() => onEdit(wk.id)} title="Edit workout"><GearIcon className="w-4 h-4" /></IconButton>
+                <IconButton onClick={() => onDelete(wk.id)} className="text-iosred" title="Delete workout"><TrashIcon className="w-4 h-4" /></IconButton>
               </div>
             </div>
             <label className="flex items-center justify-between gap-2 text-[13px] font-medium text-iossecondary pt-2 border-t border-iosseparator">
@@ -1333,6 +1422,29 @@ function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete, onToggle
   );
 }
 
+// Compact, read-only summary of one exercise with a ⚙ that opens its
+// settings — the shape every list of exercises uses outside the checklist.
+function ExerciseListRow({ exercise, isGroupContinuation, onOpenSettings }) {
+  return (
+    <div className="flex items-center gap-2 py-2.5 border-b border-iosseparator last:border-0">
+      <div className="flex-1 min-w-0">
+        <div className="flex items-center gap-1.5">
+          <span className={`font-semibold text-[15px] truncate ${exercise.name ? '' : 'text-iossecondary'}`}>
+            {exercise.name || 'Untitled exercise'}
+          </span>
+          {(exercise.supersetWithNext || isGroupContinuation) && (
+            <span className="text-[10px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2 py-0.5 rounded-full shrink-0">Superset</span>
+          )}
+        </div>
+        <div className="text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(exercise)}</div>
+      </div>
+      <IconButton onClick={onOpenSettings} title="Exercise settings" className="shrink-0">
+        <GearIcon className="w-5 h-5" />
+      </IconButton>
+    </div>
+  );
+}
+
 function CheckCircle({ checked }) {
   return (
     <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center shrink-0 transition-colors ${
@@ -1343,55 +1455,25 @@ function CheckCircle({ checked }) {
   );
 }
 
-// Three distinct gestures on one card: tap the checkbox to mark done, tap
-// the rest of the card to set it as the "current" exercise (what the Timer
-// adapts its timing to), long-press the card to enter reorder mode.
-function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onToggle, onSetCurrent, onLongPress }) {
-  const pressTimer = useRef(null);
-  const longPressFired = useRef(false);
-  const startPos = useRef({ x: 0, y: 0 });
-
-  function clearPressTimer() {
-    clearTimeout(pressTimer.current);
-    pressTimer.current = null;
-  }
-  function handlePointerDown(e) {
-    longPressFired.current = false;
-    startPos.current = { x: e.clientX, y: e.clientY };
-    pressTimer.current = setTimeout(() => {
-      longPressFired.current = true;
-      onLongPress();
-    }, 500);
-  }
-  function handlePointerMove(e) {
-    if (!pressTimer.current) return;
-    const dx = e.clientX - startPos.current.x;
-    const dy = e.clientY - startPos.current.y;
-    if (Math.hypot(dx, dy) > 10) clearPressTimer();
-  }
-  function handleBodyClick() {
-    if (longPressFired.current) { longPressFired.current = false; return; } // swallow the click that follows a long-press
-    onSetCurrent();
-  }
+// Two gestures and a button on one card: tap the circle to mark it done,
+// tap the card to make it the current exercise (the one the Timer runs),
+// tap ⚙ to open everything about it, hold the card to reorder the list.
+function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onToggle, onSetCurrent, onLongPress, onOpenSettings }) {
+  const press = useLongPress(onLongPress, onSetCurrent);
 
   return (
     <Card className={`overflow-hidden ${isCurrent ? 'ring-2 ring-iosblue' : ''}`}>
-      <div className={`w-full flex items-center gap-3 px-4 py-3.5 transition-colors ${checked ? 'opacity-50' : ''}`}>
+      <div className={`w-full flex items-center gap-3 pl-4 pr-1 py-3.5 transition-colors ${checked ? 'opacity-50' : ''}`}>
         <button onClick={onToggle} aria-label={checked ? 'Mark not done' : 'Mark done'} className="shrink-0">
           <CheckCircle checked={checked} />
         </button>
         <div role="button" tabIndex={0}
-          onClick={handleBodyClick}
           onKeyDown={e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSetCurrent(); } }}
-          onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={clearPressTimer}
-          onPointerCancel={clearPressTimer}
-          onPointerLeave={clearPressTimer}
-          className="flex-1 min-w-0 text-left cursor-pointer select-none active:bg-iosbg -my-3.5 -mr-4 py-3.5 pr-4 rounded-r-2xl transition-colors">
+          {...press}
+          className="flex-1 min-w-0 text-left cursor-pointer select-none active:bg-iosbg -my-3.5 py-3.5 rounded-lg transition-colors">
           <div className="flex items-center gap-1.5">
-            {isCurrent && <span className="text-iosblue text-[10px] font-bold uppercase tracking-wide">Now</span>}
-            <div className={`font-semibold text-[15px] ${checked ? 'line-through text-iossecondary' : ''}`}>{exercise.name}</div>
+            {isCurrent && <span className="text-iosblue text-[10px] font-bold uppercase tracking-wide shrink-0">Now</span>}
+            <div className={`font-semibold text-[15px] truncate ${checked ? 'line-through text-iossecondary' : ''}`}>{exercise.name}</div>
             {exercise.weightKg != null && (
               <span className="text-[12px] text-iossecondary font-medium shrink-0">{formatWeightKg(exercise.weightKg)} kg ea</span>
             )}
@@ -1400,26 +1482,34 @@ function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onTog
             )}
           </div>
           {exercise.description && <div className="text-[13px] text-iossecondary mt-0.5">{exercise.description}</div>}
+          <div className="text-[11px] text-iossecondary mt-0.5 tabular-nums">{exerciseSummary(exercise)}</div>
         </div>
+        <IconButton onClick={onOpenSettings} title="Exercise settings" className="shrink-0">
+          <GearIcon className="w-5 h-5" />
+        </IconButton>
       </div>
     </Card>
   );
 }
 
 function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, onSetCurrentExercise, onResetProgress,
-  onSwitchWorkout, workouts, onManage, onSaveWorkout, isAutoRunning, onStartAuto, onStopAuto }) {
+  onSwitchWorkout, workouts, onManage, onSaveWorkout, isAutoRunning, onStartAuto, onStopAuto, onCopyExercise }) {
   const doneCount = workout.exercises.filter(e => progress[e.id]).length;
   const total = workout.exercises.length;
-  const [reorderList, setReorderList] = useState(null); // non-null = reorder mode is active
+  const [editList, setEditList] = useState(null); // non-null = reorder/edit mode is active
+  const [settingsId, setSettingsId] = useState(null); // exercise whose settings sheet is open
   const sortableContainerRef = useRef(null);
   const sortableInstanceRef = useRef(null);
 
   useEffect(() => {
-    if (!reorderList || !sortableContainerRef.current || typeof Sortable === 'undefined') return;
+    if (!editList || !sortableContainerRef.current || typeof Sortable === 'undefined') return;
     sortableInstanceRef.current = Sortable.create(sortableContainerRef.current, {
       animation: 150,
+      // Dragging is limited to the ⠿ grip so the rest of the row stays free
+      // for tapping ⚙ and for scrolling a list longer than the screen.
+      handle: '.drag-handle',
       onEnd: (evt) => {
-        setReorderList(prev => {
+        setEditList(prev => {
           if (!prev || evt.oldIndex === evt.newIndex) return prev;
           const next = prev.slice();
           const [moved] = next.splice(evt.oldIndex, 1);
@@ -1430,36 +1520,104 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
     });
     return () => { if (sortableInstanceRef.current) { sortableInstanceRef.current.destroy(); sortableInstanceRef.current = null; } };
     // eslint-disable-next-line
-  }, [!!reorderList]);
+  }, [!!editList]);
 
-  function confirmReorder() {
-    onSaveWorkout({ ...workout, exercises: reorderList });
-    setReorderList(null);
+  // In edit mode the sheet edits the pending draft (saved together with the
+  // new order); outside it, it writes straight through to the workout.
+  const listForSettings = editList || workout.exercises;
+  const settingsIndex = listForSettings.findIndex(e => e.id === settingsId);
+  const settingsEx = settingsIndex === -1 ? null : listForSettings[settingsIndex];
+
+  function applySettings(updated) {
+    if (editList) setEditList(prev => prev.map(e => e.id === updated.id ? updated : e));
+    else onSaveWorkout({ ...workout, exercises: workout.exercises.map(e => e.id === updated.id ? updated : e) });
+    setSettingsId(null);
+  }
+  function deleteFromSettings() {
+    if (!confirm('Delete this exercise?')) return;
+    if (editList) setEditList(prev => prev.filter(e => e.id !== settingsId));
+    else onSaveWorkout({ ...workout, exercises: workout.exercises.filter(e => e.id !== settingsId) });
+    setSettingsId(null);
+  }
+  function cancelSettings() {
+    // Backing out of a brand-new, never-named exercise drops it again, so
+    // cancelling never leaves a blank row behind.
+    if (editList && settingsEx && !settingsEx.name) setEditList(prev => prev.filter(e => e.id !== settingsId));
+    setSettingsId(null);
+  }
+  function addExercise() {
+    const created = ex('', '');
+    setEditList(prev => (prev || workout.exercises.map(e => ({ ...e }))).concat(created));
+    setSettingsId(created.id);
+  }
+  function confirmEdits() {
+    onSaveWorkout({ ...workout, exercises: editList.filter(e => e.name) });
+    setEditList(null);
   }
 
-  if (reorderList) {
+  const settingsSheet = settingsEx ? (
+    <ExerciseSettingsSheet
+      exercise={settingsEx}
+      showSuperset={settingsIndex < listForSettings.length - 1}
+      otherWorkouts={(workouts || []).filter(w => w.id !== workout.id)}
+      onCopyTo={(copied, targetId) => {
+        const target = (workouts || []).find(w => w.id === targetId);
+        if (!target || !onCopyExercise) return;
+        onCopyExercise(copied, targetId);
+        alert(`Copied "${copied.name || 'exercise'}" to ${target.name}.`);
+      }}
+      onCancel={cancelSettings}
+      onSave={applySettings}
+      onDelete={deleteFromSettings}
+    />
+  ) : null;
+
+  if (editList) {
     return (
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between">
-          <h1 className="text-[28px] font-bold">Reorder</h1>
-          <IconButton onClick={confirmReorder} className="bg-iosblue text-white" title="Done reordering">
+          <h1 className="text-[28px] font-bold">Edit List</h1>
+          <IconButton onClick={confirmEdits} className="bg-iosblue text-white" title="Done editing">
             <CheckIcon className="w-5 h-5" />
           </IconButton>
         </div>
-        <div className="text-center text-[13px] text-iossecondary -mt-2">Drag exercises into the order you do them</div>
+        <div className="text-center text-[13px] text-iossecondary -mt-2">Drag ⠿ to reorder · tap ⚙ to set times, sets and weight</div>
+
         <div ref={sortableContainerRef} className="flex flex-col gap-2.5">
-          {reorderList.map(exr => (
+          {editList.map((exr, i) => (
             <div key={exr.id}
-              className="flex items-center gap-3 bg-ioscard rounded-2xl px-4 py-3.5 shadow-[0_4px_20px_rgba(0,0,0,0.04)] cursor-grab active:cursor-grabbing">
-              <span className="text-iossecondary text-[18px] leading-none select-none" aria-hidden="true">⠿</span>
-              <div className="flex-1 min-w-0 font-semibold text-[15px]">{exr.name}</div>
+              className="flex items-center gap-1 bg-ioscard rounded-2xl pl-1 pr-1 py-2.5 shadow-[0_4px_20px_rgba(0,0,0,0.04)]">
+              <span className="drag-handle shrink-0 min-w-[44px] min-h-[44px] flex items-center justify-center text-iossecondary text-[18px] leading-none select-none cursor-grab active:cursor-grabbing"
+                style={{ touchAction: 'none' }} aria-hidden="true">⠿</span>
+              <div className="flex-1 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <span className={`font-semibold text-[15px] truncate ${exr.name ? '' : 'text-iossecondary'}`}>
+                    {exr.name || 'Untitled exercise'}
+                  </span>
+                  {(exr.supersetWithNext || (i > 0 && !!editList[i - 1].supersetWithNext)) && (
+                    <span className="text-[10px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2 py-0.5 rounded-full shrink-0">Superset</span>
+                  )}
+                </div>
+                <div className="text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(exr)}</div>
+              </div>
+              <IconButton onClick={() => setSettingsId(exr.id)} title="Exercise settings" className="shrink-0">
+                <GearIcon className="w-5 h-5" />
+              </IconButton>
             </div>
           ))}
         </div>
-        <button onClick={confirmReorder}
-          className="w-full py-3.5 rounded-2xl bg-iosblue text-white font-semibold text-[16px] flex items-center justify-center gap-2">
-          <CheckIcon className="w-5 h-5" /> Done Reordering
+
+        <button onClick={addExercise}
+          className="w-full py-2.5 rounded-full bg-ioscard text-[14px] font-medium text-iosblue shadow-[0_4px_20px_rgba(0,0,0,0.04)]">
+          + Add exercise
         </button>
+
+        <button onClick={confirmEdits}
+          className="w-full py-3.5 rounded-2xl bg-iosblue text-white font-semibold text-[16px] flex items-center justify-center gap-2">
+          <CheckIcon className="w-5 h-5" /> Done
+        </button>
+
+        {settingsSheet}
       </div>
     );
   }
@@ -1496,13 +1654,22 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
             isGroupContinuation={i > 0 && !!workout.exercises[i - 1].supersetWithNext}
             onToggle={() => onToggleExercise(exr.id, !progress[exr.id])}
             onSetCurrent={() => onSetCurrentExercise(exr.id)}
-            onLongPress={() => setReorderList(workout.exercises.map(e => ({ ...e })))} />
+            onOpenSettings={() => setSettingsId(exr.id)}
+            onLongPress={() => setEditList(workout.exercises.map(e => ({ ...e })))} />
         ))}
       </div>
 
-      <button onClick={onResetProgress} className="w-full py-3 rounded-2xl bg-iosseparator text-[15px] font-medium text-ioslabel">
-        Reset Checkmarks
-      </button>
+      {total === 0 ? (
+        <button onClick={addExercise} className="w-full py-3 rounded-2xl bg-iosblue text-white font-semibold text-[15px]">
+          + Add your first exercise
+        </button>
+      ) : (
+        <button onClick={onResetProgress} className="w-full py-3 rounded-2xl bg-iosseparator text-[15px] font-medium text-ioslabel">
+          Reset Checkmarks
+        </button>
+      )}
+
+      {settingsSheet}
     </div>
   );
 }
@@ -1570,6 +1737,7 @@ function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExerci
       isAutoRunning={autoRunWorkoutId === activeWorkout.id}
       onStartAuto={onStartAuto}
       onStopAuto={onStopAuto}
+      onCopyExercise={onCopyExercise}
     />
   );
 }
@@ -1585,8 +1753,6 @@ function App() {
 
   const [tab, setTab] = useState('timer');
   const [celebration, setCelebration] = useState(null);
-
-  const selectedCategory = state.categories.find(c => c.id === state.selectedCategoryId) || state.categories[0];
 
   // The exercise the Timer should adapt its timing to: a manual override (if
   // still unchecked) takes priority, otherwise it's simply the first
@@ -1635,16 +1801,7 @@ function App() {
     setState(s => {
       const currentExerciseOverride = { ...s.currentExerciseOverride };
       delete currentExerciseOverride[workoutId]; // auto mode always follows the real order, not a manual pin
-      // Prefer whichever category has alternating-sides timing configured —
-      // that's the one this whole feature makes sense for.
-      const smartCategory = s.categories.find(c => c.altWorkSec != null);
-      return {
-        ...s,
-        activeWorkoutId: workoutId,
-        autoRunWorkoutId: workoutId,
-        currentExerciseOverride,
-        selectedCategoryId: smartCategory ? smartCategory.id : s.selectedCategoryId,
-      };
+      return { ...s, activeWorkoutId: workoutId, autoRunWorkoutId: workoutId, currentExerciseOverride };
     });
     setTab('timer');
   }
@@ -1669,30 +1826,6 @@ function App() {
       const currentExerciseOverride = { ...s.currentExerciseOverride };
       delete currentExerciseOverride[workoutId];
       return { ...s, currentExerciseOverride };
-    });
-  }
-
-  function updateCategory(id, patch) {
-    setState(s => ({ ...s, categories: s.categories.map(c => c.id === id ? { ...c, ...patch } : c) }));
-  }
-  function renameCategory(id, name) {
-    updateCategory(id, { name });
-  }
-  function ensureCategoryNamed(id) {
-    const cat = state.categories.find(c => c.id === id);
-    if (cat && !cat.name.trim()) updateCategory(id, { name: 'Category' });
-  }
-  function addCategory() {
-    const newCat = { id: uid('cat'), name: 'New Category', icon: 'dumbbell', workSec: 60, restSec: 30, rounds: 3 };
-    setState(s => ({ ...s, categories: [...s.categories, newCat], selectedCategoryId: newCat.id }));
-  }
-  function deleteCategory(id) {
-    if (state.categories.length <= 1) { alert('At least one category must remain'); return; }
-    if (!confirm('Delete this category?')) return;
-    setState(s => {
-      const categories = s.categories.filter(c => c.id !== id);
-      const selectedCategoryId = s.selectedCategoryId === id ? categories[0].id : s.selectedCategoryId;
-      return { ...s, categories, selectedCategoryId };
     });
   }
 
@@ -1807,29 +1940,15 @@ function App() {
     <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-6 gap-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 84px)' }}>
       <div className={tab === 'timer' ? 'contents' : 'hidden'}>
         <TimerTab
-          category={selectedCategory}
-          categories={state.categories}
-          onSelectCategory={id => setState(s => ({ ...s, selectedCategoryId: id }))}
           soundEnabled={state.soundEnabled}
           onToggleSound={() => setState(s => ({ ...s, soundEnabled: !s.soundEnabled }))}
           currentExercise={currentExercise}
+          workoutName={activeWorkoutForGroup ? activeWorkoutForGroup.name : null}
           currentGroup={currentGroup}
           nextExercise={nextExercise}
           autoRun={autoRun}
           onAutoExerciseComplete={completeAutoExercise}
           onStopAuto={stopAuto}
-        />
-      </div>
-
-      <div className={tab === 'categories' ? 'contents' : 'hidden'}>
-        <CategoriesTab
-          categories={state.categories}
-          selectedCategoryId={state.selectedCategoryId}
-          onUpdateCategory={updateCategory}
-          onRenameCategory={renameCategory}
-          onEnsureNamed={ensureCategoryNamed}
-          onAddCategory={addCategory}
-          onDeleteCategory={deleteCategory}
         />
       </div>
 
