@@ -184,7 +184,7 @@ function defaultState() {
     activeWorkoutId: workouts[0].id,
     soundEnabled: true,
     currentExerciseOverride: {},
-    autoRunWorkoutId: null,
+    autoRun: true,
   };
 }
 
@@ -253,7 +253,12 @@ function migrateState(loaded) {
   }
   if (typeof state.soundEnabled !== 'boolean') state.soundEnabled = true;
   if (!state.currentExerciseOverride) state.currentExerciseOverride = {};
-  if (state.autoRunWorkoutId === undefined) state.autoRunWorkoutId = null;
+  // Auto used to be "this workout is auto-running", something you started by
+  // hand each time and that switched itself off whenever you changed or
+  // finished a workout. It is now simply on unless you turn it off, so the
+  // per-workout id is dropped and the preference defaults to on.
+  if (typeof state.autoRun !== 'boolean') state.autoRun = true;
+  delete state.autoRunWorkoutId;
   return state;
 }
 
@@ -528,7 +533,7 @@ function CountRow({ label, value, max, onCommit }) {
 const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest: 'Rest', done: 'Done! 🎉' };
 const COUNTDOWN_SEC = 3;
 
-function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
+function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, activeWorkoutId, workoutUntouched,
   currentGroup, nextExercise, autoRun, onAutoExerciseComplete, onStopAuto }) {
   const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
@@ -551,14 +556,12 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
   const autoFirstDoneRef = useRef(false); // true once this Auto *run* has done its one countdown
   const [, forceRender] = useReducer(x => x + 1, 0);
 
-  // If the app is closed/reloaded while Auto is active, `autoRun` comes back
-  // true again on the very first render from persisted state — but that
-  // should NOT resume the timer on its own; the user should have to press
-  // Play. Lazily captured once, on this component's actual first render, so
-  // pressing the Auto button later in the same live session (a real false ->
-  // true transition, not "already true on mount") is unaffected.
-  const autoSuppressedRef = useRef(null);
-  if (autoSuppressedRef.current === null) autoSuppressedRef.current = autoRun;
+  // Auto being on must never mean the app starts a workout by itself. It
+  // only ever chains onward *within* a run you began: this stays armed until
+  // a manual Start, and re-arms whenever you land on a different workout
+  // (opening the app, switching workouts, or rolling into the next one after
+  // a finish) — see the effect on activeWorkoutId below.
+  const autoSuppressedRef = useRef(true);
 
   // The current exercise (or, for a superset, the active member of the
   // current group) can change mid-phase (e.g. you tap a different exercise
@@ -636,6 +639,24 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
     if (autoRun) autoFirstDoneRef.current = false;
   }, [autoRun]);
 
+  function rearmAuto() {
+    autoSuppressedRef.current = true;
+    autoStartedForRef.current = null;
+    autoCompletedForRef.current = null;
+    autoFirstDoneRef.current = false;
+  }
+  // A different workout is a different session: whatever Auto was in the
+  // middle of does not carry over, and the new one waits for a real Start.
+  // eslint-disable-next-line
+  useEffect(() => { rearmAuto(); }, [activeWorkoutId]);
+  // So is standing at the start of one — untouched, or finished and cleared.
+  // This is what stops a finish from looping: completing the last exercise
+  // wipes the checkmarks, which makes the first exercise current again, and
+  // that is indistinguishable from "a new exercise became current" — so
+  // without re-arming here Auto would start the workout over, forever.
+  // eslint-disable-next-line
+  useEffect(() => { if (workoutUntouched) rearmAuto(); }, [workoutUntouched]);
+
   // Auto mode, part 1: whenever a new exercise becomes current while nothing
   // is actively running (idle, or just finished), kick off its work/rest
   // cycle on its own — no Start tap needed. Only the very first exercise of
@@ -644,7 +665,7 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
   // once per exercise (never interrupts a phase already in progress).
   useEffect(() => {
     if (!autoRun || !currentExercise) return;
-    if (autoSuppressedRef.current) return; // resumed after a reload — wait for a manual Start/Resume
+    if (autoSuppressedRef.current) return; // nothing has been started by hand yet on this workout
     if (currentExercise.id === autoStartedForRef.current) return;
     if (phase !== 'idle' && phase !== 'done') return;
     autoStartedForRef.current = currentExercise.id;
@@ -872,7 +893,7 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
 
   function start() {
     blurActiveInput(); // the phone is about to go down (or into a pocket)
-    autoSuppressedRef.current = false; // any manual Start/Resume re-arms Auto's own auto-advancing
+    autoSuppressedRef.current = false; // a manual Start is what hands the run over to Auto
     // A manual Start while Auto is active (e.g. resuming after a reload)
     // IS this run's one countdown — later exercises still shouldn't get
     // another one just because the auto-effect itself never fired here.
@@ -1368,7 +1389,7 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
             isGroupContinuation={i > 0 && !!exercises[i - 1].supersetWithNext}
             onOpenSettings={() => setSettingsId(exr.id)} />
         ))}
-        <button onClick={() => { const created = ex('', ''); setExercises(prev => withTrailingSupersetCleared(prev).concat(created)); setSettingsId(created.id); }}
+        <button onClick={() => { const created = ex('', ''); setExercises(prev => insertExercisesAt(prev, prev.length, [created])); setSettingsId(created.id); }}
           className="mt-3 w-full py-2.5 rounded-full bg-iosbg text-[14px] font-medium text-iosblue">
           + Add exercise manually
         </button>
@@ -1443,15 +1464,15 @@ function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete, onToggle
   );
 }
 
-// Appending to a workout must not absorb the new exercise into whatever the
-// old last exercise was chained to: a supersetWithNext still set on the very
-// last exercise is a dangling flag (it had nothing to link to and reads as
-// "chain ends here"), so leaving it set would silently superset it with
-// whatever gets appended next.
-function withTrailingSupersetCleared(exercises) {
-  const last = exercises[exercises.length - 1];
-  if (!last || !last.supersetWithNext) return exercises;
-  return exercises.map((e, i) => i === exercises.length - 1 ? { ...e, supersetWithNext: false } : e);
+// Dropping exercises into a workout must never join them to a superset that
+// was already there: whatever they land behind must not keep a
+// supersetWithNext pointing at them. (On the last exercise that flag is
+// dangling — it had nothing to link to and reads as "chain ends here" — so
+// appending after it would silently chain it into the new exercise.)
+function insertExercisesAt(exercises, index, added) {
+  const head = exercises.slice(0, index).map((e, i, arr) =>
+    (i === arr.length - 1 && e.supersetWithNext) ? { ...e, supersetWithNext: false } : e);
+  return head.concat(added, exercises.slice(index));
 }
 
 function sameExerciseName(a, b) {
@@ -1626,7 +1647,7 @@ function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onTog
 }
 
 function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, onSetCurrentExercise, onResetProgress,
-  onSwitchWorkout, workouts, onManage, onSaveWorkout, isAutoRunning, onStartAuto, onStopAuto, onCopyExercise }) {
+  onSwitchWorkout, workouts, onManage, onSaveWorkout, autoOn, onToggleAuto, onCopyExercise }) {
   const doneCount = workout.exercises.filter(e => progress[e.id]).length;
   const total = workout.exercises.length;
   const [editList, setEditList] = useState(null); // non-null = reorder/edit mode is active
@@ -1655,6 +1676,24 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
     return () => { if (sortableInstanceRef.current) { sortableInstanceRef.current.destroy(); sortableInstanceRef.current = null; } };
     // eslint-disable-next-line
   }, [!!editList]);
+
+  // Where a newly added exercise belongs. Once a workout is under way (you
+  // have checked something off), you are adding it because you want to do it
+  // *now* — so it goes in right after the exercise you are on, becoming the
+  // next one up, rather than at the end behind everything still to come. A
+  // superset is one unit, so it lands after the whole group. On a workout
+  // that hasn't started there is no "now", and it goes at the end.
+  function insertionIndex(list) {
+    const started = list.some(e => progress[e.id]);
+    if (!started || !currentExercise) return list.length;
+    const group = findGroupFor(list, currentExercise.id);
+    const lastOfGroup = group ? group[group.length - 1] : currentExercise;
+    const idx = list.findIndex(e => e.id === lastOfGroup.id);
+    return idx === -1 ? list.length : idx + 1;
+  }
+  function withAdded(list, added) {
+    return insertExercisesAt(list, insertionIndex(list), added);
+  }
 
   // In edit mode the sheet edits the pending draft (saved together with the
   // new order); outside it, it writes straight through to the workout.
@@ -1689,8 +1728,8 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
   function addExercise() {
     const created = ex('', '');
     setAddOpen(false);
-    if (editList) setEditList(prev => withTrailingSupersetCleared(prev).concat(created));
-    else onSaveWorkout({ ...workout, exercises: withTrailingSupersetCleared(workout.exercises).concat(created) });
+    if (editList) setEditList(prev => withAdded(prev, [created]));
+    else onSaveWorkout({ ...workout, exercises: withAdded(workout.exercises, [created]) });
     setSettingsId(created.id);
   }
   // Pulling in exercises you already have elsewhere: each one arrives as its
@@ -1698,8 +1737,8 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
   // editing it here never reaches back into the workout it came from.
   function addFromOtherWorkouts(chosen) {
     const copies = chosen.map(c => ({ ...normalizeExercise(c), id: uid('ex'), supersetWithNext: false }));
-    if (editList) setEditList(prev => withTrailingSupersetCleared(prev).concat(copies));
-    else onSaveWorkout({ ...workout, exercises: withTrailingSupersetCleared(workout.exercises).concat(copies) });
+    if (editList) setEditList(prev => withAdded(prev, copies));
+    else onSaveWorkout({ ...workout, exercises: withAdded(workout.exercises, copies) });
     setAddOpen(false);
   }
   function confirmEdits() {
@@ -1803,9 +1842,14 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
       <div className="flex items-center justify-between">
         <h1 className="text-[28px] font-bold">Workouts</h1>
         <div className="flex items-center gap-1">
-          <button onClick={() => isAutoRunning ? onStopAuto() : onStartAuto(workout.id)}
-            className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-semibold transition bg-iosseparator text-ioslabel">
-            {isAutoRunning ? <PauseIcon className="w-3.5 h-3.5" /> : <PlayIcon className="w-3.5 h-3.5" />} Auto
+          {/* A switch, not a launcher: it is on out of the box and decides
+              whether finishing one exercise rolls straight into the next.
+              The run itself still begins with Start on the Timer. */}
+          <button onClick={onToggleAuto} aria-pressed={autoOn} title={autoOn ? 'Auto-advance is on' : 'Auto-advance is off'}
+            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-semibold transition ${
+              autoOn ? 'bg-iosblue text-white' : 'bg-iosseparator text-iossecondary'
+            }`}>
+            {autoOn ? <PlayIcon className="w-3.5 h-3.5" /> : <PauseIcon className="w-3.5 h-3.5" />} Auto
           </button>
           <IconButton onClick={onManage} title="Manage workouts"><GearIcon className="w-5 h-5" /></IconButton>
         </div>
@@ -1851,7 +1895,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
 }
 
 function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExercise, onToggleExercise, onResetProgress, onSetActiveWorkout,
-  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise, autoRunWorkoutId, onStartAuto, onStopAuto, onCopyExercise, onToggleRotation }) {
+  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise, autoOn, onToggleAuto, onCopyExercise, onToggleRotation }) {
   const [view, setView] = useState('run'); // run | manage | edit
   const [editingId, setEditingId] = useState(null);
 
@@ -1910,9 +1954,8 @@ function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExerci
       workouts={workouts}
       onManage={() => setView('manage')}
       onSaveWorkout={onSaveWorkout}
-      isAutoRunning={autoRunWorkoutId === activeWorkout.id}
-      onStartAuto={onStartAuto}
-      onStopAuto={onStopAuto}
+      autoOn={autoOn}
+      onToggleAuto={onToggleAuto}
       onCopyExercise={onCopyExercise}
     />
   );
@@ -1979,18 +2022,14 @@ function App() {
     return workout.exercises.slice(idx + 1).find(e => !progress[e.id]) || null;
   }
   const nextExercise = getNextExercise(state.activeWorkoutId, currentExercise);
-  const autoRun = !!state.autoRunWorkoutId && state.autoRunWorkoutId === state.activeWorkoutId;
+  const autoRun = state.autoRun !== false;
+  // "Nothing ticked off yet" — a workout you haven't started, or one that just
+  // finished and cleared itself. The Timer uses it to know when Auto has to
+  // wait for a manual Start again (see rearmAuto).
+  const workoutUntouched = !Object.values(state.workoutProgress[state.activeWorkoutId] || {}).some(Boolean);
 
-  function startAuto(workoutId) {
-    setState(s => {
-      const currentExerciseOverride = { ...s.currentExerciseOverride };
-      delete currentExerciseOverride[workoutId]; // auto mode always follows the real order, not a manual pin
-      return { ...s, activeWorkoutId: workoutId, autoRunWorkoutId: workoutId, currentExerciseOverride };
-    });
-    setTab('timer');
-  }
-  function stopAuto() {
-    setState(s => ({ ...s, autoRunWorkoutId: null }));
+  function setAutoRun(on) {
+    setState(s => ({ ...s, autoRun: on }));
   }
   function completeAutoExercise(exerciseId) {
     toggleExercise(state.activeWorkoutId, exerciseId, true);
@@ -2026,10 +2065,10 @@ function App() {
       // Checking off the exercise that was manually set as "current" clears
       // the override, so the next unchecked exercise takes over automatically.
       if (checked && group.some(e => currentExerciseOverride[workoutId] === e.id)) delete currentExerciseOverride[workoutId];
-      // Finishing the workout also ends Auto mode for it — Auto mode is
-      // scoped to running through one workout, not chaining into the next.
-      const autoRunWorkoutId = (checked && allDone && s.autoRunWorkoutId === workoutId) ? null : s.autoRunWorkoutId;
-      const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress }, currentExerciseOverride, autoRunWorkoutId };
+      // Finishing a workout doesn't switch Auto off any more: the Timer
+      // stops chaining because it lands on a different workout (which waits
+      // for a manual Start), not because the preference was flipped.
+      const next = { ...s, workoutProgress: { ...s.workoutProgress, [workoutId]: nextProgress }, currentExerciseOverride };
 
       if (checked && allDone) {
         // Auto-advance only cycles within the workouts marked "in rotation"
@@ -2087,7 +2126,7 @@ function App() {
         // supersetWithNext is reset — the exercise it was paired with lives
         // in the source workout, not this one, so pairing it here by default
         // would silently (and wrongly) merge it with whatever ends up next.
-        ? { ...w, exercises: [...withTrailingSupersetCleared(w.exercises), { ...exercise, id: uid('ex'), supersetWithNext: false }] }
+        ? { ...w, exercises: insertExercisesAt(w.exercises, w.exercises.length, [{ ...exercise, id: uid('ex'), supersetWithNext: false }]) }
         : w),
     }));
   }
@@ -2107,8 +2146,7 @@ function App() {
       const currentExerciseOverride = { ...s.currentExerciseOverride };
       delete currentExerciseOverride[id];
       const activeWorkoutId = s.activeWorkoutId === id ? (workouts[0] ? workouts[0].id : null) : s.activeWorkoutId;
-      const autoRunWorkoutId = s.autoRunWorkoutId === id ? null : s.autoRunWorkoutId;
-      return { ...s, workouts, workoutProgress, currentExerciseOverride, activeWorkoutId, autoRunWorkoutId };
+      return { ...s, workouts, workoutProgress, currentExerciseOverride, activeWorkoutId };
     });
   }
 
@@ -2128,11 +2166,13 @@ function App() {
           onToggleSound={() => setState(s => ({ ...s, soundEnabled: !s.soundEnabled }))}
           currentExercise={currentExercise}
           workoutName={activeWorkoutForGroup ? activeWorkoutForGroup.name : null}
+          activeWorkoutId={state.activeWorkoutId}
+          workoutUntouched={workoutUntouched}
           currentGroup={currentGroup}
           nextExercise={nextExercise}
           autoRun={autoRun}
           onAutoExerciseComplete={completeAutoExercise}
-          onStopAuto={stopAuto}
+          onStopAuto={() => setAutoRun(false)}
         />
       </div>
 
@@ -2148,9 +2188,8 @@ function App() {
           onSaveWorkout={saveWorkout}
           onDeleteWorkout={deleteWorkout}
           onSetCurrentExercise={setCurrentExercise}
-          autoRunWorkoutId={state.autoRunWorkoutId}
-          onStartAuto={startAuto}
-          onStopAuto={stopAuto}
+          autoOn={autoRun}
+          onToggleAuto={() => setAutoRun(!autoRun)}
           onCopyExercise={copyExerciseToWorkout}
           onToggleRotation={toggleWorkoutRotation}
         />
