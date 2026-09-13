@@ -365,6 +365,19 @@ function IconButton({ onClick, children, className = '', title }) {
 
 function clamp(v, min, max) { return Math.max(min, Math.min(max, v)); }
 
+// iOS pops its "Undo Typing" alert whenever the phone is jostled (a pocket,
+// a gym bag) while a text field still holds focus and an undo stack. A web
+// page cannot turn that gesture off — only iOS Settings > Accessibility >
+// Touch > Shake to Undo can — but the alert has nothing to offer once
+// nothing is focused, so every path that leaves an editing surface drops
+// focus explicitly instead of leaving a field live behind it.
+function blurActiveInput() {
+  const el = document.activeElement;
+  if (!el || typeof el.blur !== 'function') return;
+  const tag = el.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable) el.blur();
+}
+
 // ---- iOS-style scrolling wheel picker (like the alarm clock time picker) ----
 const WHEEL_ITEM_HEIGHT = 40;
 const WHEEL_VISIBLE_COUNT = 5;
@@ -858,6 +871,7 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
   }
 
   function start() {
+    blurActiveInput(); // the phone is about to go down (or into a pocket)
     autoSuppressedRef.current = false; // any manual Start/Resume re-arms Auto's own auto-advancing
     // A manual Start while Auto is active (e.g. resuming after a reload)
     // IS this run's one countdown — later exercises still shouldn't get
@@ -894,6 +908,7 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName,
   // of an Auto run still gets the full countdown (called via start()).
   function beginWorkDirectly() {
     if (phaseRef.current !== 'idle' && phaseRef.current !== 'done') return;
+    blurActiveInput();
     phaseRef.current = 'work';
     roundRef.current = 1;
     groupMemberIndexRef.current = 0;
@@ -1160,17 +1175,22 @@ function ExerciseSettingsSheet({ exercise, showSuperset, otherWorkouts, onCopyTo
   function handleDone() {
     const clean = normalizeExercise(draft);
     if (!clean.name) { alert('Please give the exercise a name'); return; }
+    blurActiveInput();
     onSave(clean);
+  }
+  function handleCancel() {
+    blurActiveInput();
+    onCancel();
   }
 
   return (
-    <div className="fixed inset-0 z-[45] flex items-end" onClick={onCancel}>
+    <div className="fixed inset-0 z-[45] flex items-end" onClick={handleCancel}>
       <div className="absolute inset-0 bg-black/30" />
       <div onClick={e => e.stopPropagation()}
         className="relative w-full max-w-md mx-auto bg-white rounded-t-3xl shadow-2xl animate-[slideUp_0.25s_ease] flex flex-col max-h-[88vh]"
         style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
         <div className="flex items-center justify-between px-4 py-3 border-b border-iosseparator shrink-0">
-          <button onClick={onCancel} className="text-iosblue text-[16px] px-1">Cancel</button>
+          <button onClick={handleCancel} className="text-iosblue text-[16px] px-1">Cancel</button>
           <div className="font-semibold text-[16px]">Exercise</div>
           <button onClick={handleDone} className="text-iosblue font-semibold text-[16px] px-1">Done</button>
         </div>
@@ -1309,6 +1329,7 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
   }
 
   function save() {
+    blurActiveInput();
     const cleanName = name.trim();
     if (!cleanName) { alert('Please give the workout a name'); return; }
     const clean = exercises.filter(e => e.name && e.name.trim()).map(normalizeExercise);
@@ -1325,7 +1346,7 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-2">
-        <IconButton onClick={onCancel}><ChevronLeftIcon className="w-5 h-5" /></IconButton>
+        <IconButton onClick={() => { blurActiveInput(); onCancel(); }}><ChevronLeftIcon className="w-5 h-5" /></IconButton>
         <input value={name} onChange={e => setName(e.target.value)} placeholder="Workout name (e.g. Workout C)"
           className="text-[20px] font-bold bg-transparent outline-none flex-1" />
       </div>
@@ -1751,6 +1772,14 @@ function App() {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   }, [state]);
 
+  // Backgrounding the app is exactly when the phone goes into a pocket, so
+  // make sure no text field is left focused behind it (see blurActiveInput).
+  useEffect(() => {
+    function onHide() { if (document.visibilityState === 'hidden') blurActiveInput(); }
+    document.addEventListener('visibilitychange', onHide);
+    return () => document.removeEventListener('visibilitychange', onHide);
+  }, []);
+
   const [tab, setTab] = useState('timer');
   const [celebration, setCelebration] = useState(null);
 
@@ -1972,7 +2001,7 @@ function App() {
         />
       </div>
 
-      <TabBar tab={tab} onChange={setTab} />
+      <TabBar tab={tab} onChange={(t) => { blurActiveInput(); setTab(t); }} />
       <CompletionOverlay celebration={celebration} />
     </div>
   );
