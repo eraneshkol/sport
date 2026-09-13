@@ -1368,7 +1368,7 @@ function WorkoutEditView({ workout, workouts, onCancel, onSave, onCopyExercise }
             isGroupContinuation={i > 0 && !!exercises[i - 1].supersetWithNext}
             onOpenSettings={() => setSettingsId(exr.id)} />
         ))}
-        <button onClick={() => { const created = ex('', ''); setExercises(prev => prev.concat(created)); setSettingsId(created.id); }}
+        <button onClick={() => { const created = ex('', ''); setExercises(prev => withTrailingSupersetCleared(prev).concat(created)); setSettingsId(created.id); }}
           className="mt-3 w-full py-2.5 rounded-full bg-iosbg text-[14px] font-medium text-iosblue">
           + Add exercise manually
         </button>
@@ -1438,6 +1438,118 @@ function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete, onToggle
             </label>
           </Card>
         ))}
+      </div>
+    </div>
+  );
+}
+
+// Appending to a workout must not absorb the new exercise into whatever the
+// old last exercise was chained to: a supersetWithNext still set on the very
+// last exercise is a dangling flag (it had nothing to link to and reads as
+// "chain ends here"), so leaving it set would silently superset it with
+// whatever gets appended next.
+function withTrailingSupersetCleared(exercises) {
+  const last = exercises[exercises.length - 1];
+  if (!last || !last.supersetWithNext) return exercises;
+  return exercises.map((e, i) => i === exercises.length - 1 ? { ...e, supersetWithNext: false } : e);
+}
+
+function sameExerciseName(a, b) {
+  return (a || '').trim().toLowerCase() === (b || '').trim().toLowerCase();
+}
+
+// Everything this workout could pull in: every exercise that lives in another
+// workout and isn't already here, one entry per name (the same exercise in
+// two workouts is still one thing to add).
+function candidatesForWorkout(workout, workouts) {
+  const taken = workout.exercises.map(e => e.name);
+  const picked = [];
+  (workouts || []).forEach(w => {
+    if (w.id === workout.id) return;
+    w.exercises.forEach(e => {
+      if (!e.name || !e.name.trim()) return;
+      if (taken.some(n => sameExerciseName(n, e.name))) return;
+      if (picked.some(p => sameExerciseName(p.name, e.name))) return;
+      picked.push({ ...e, fromWorkout: w.name });
+    });
+  });
+  return picked;
+}
+
+// Opened by the round + on the workout screen: pick exercises you already
+// have elsewhere and drop them into this workout, or start a brand-new one.
+function AddExerciseSheet({ workout, workouts, onCancel, onAdd, onCreateNew }) {
+  const [selectedIds, setSelectedIds] = useState([]);
+  const candidates = candidatesForWorkout(workout, workouts);
+
+  function toggle(id) {
+    setSelectedIds(prev => prev.includes(id) ? prev.filter(x => x !== id) : prev.concat(id));
+  }
+  function handleAdd() {
+    const chosen = candidates.filter(c => selectedIds.includes(c.id));
+    if (chosen.length === 0) return;
+    onAdd(chosen);
+  }
+
+  return (
+    <div className="fixed inset-0 z-[45] flex items-end" onClick={onCancel}>
+      <div className="absolute inset-0 bg-black/30" />
+      <div onClick={e => e.stopPropagation()}
+        className="relative w-full max-w-md mx-auto bg-white rounded-t-3xl shadow-2xl animate-[slideUp_0.25s_ease] flex flex-col max-h-[88vh]"
+        style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+        <div className="flex items-center justify-between px-4 py-3 border-b border-iosseparator shrink-0">
+          <button onClick={onCancel} className="text-iosblue text-[16px] px-1">Cancel</button>
+          <div className="font-semibold text-[16px]">Add to {workout.name}</div>
+          <span className="w-12" />
+        </div>
+
+        <div className="overflow-y-auto px-4 py-3 flex flex-col gap-2">
+          <button onClick={onCreateNew}
+            className="flex items-center gap-3 px-3 py-3 rounded-xl bg-iosbg text-left active:bg-iosseparator transition-colors">
+            <span className="w-7 h-7 rounded-full bg-iosblue text-white flex items-center justify-center shrink-0">
+              <PlusIcon className="w-4 h-4" strokeWidth="2.4" />
+            </span>
+            <span className="font-semibold text-[15px] text-iosblue">Create a new exercise</span>
+          </button>
+
+          {candidates.length === 0 ? (
+            <div className="text-[13px] text-iossecondary text-center py-6 px-4">
+              {(workouts || []).length > 1
+                ? 'Every exercise from your other workouts is already in this one.'
+                : 'Exercises from your other workouts show up here once you have more than one workout.'}
+            </div>
+          ) : (
+            <>
+              <div className="text-[12px] text-iossecondary px-1 pt-2">From your other workouts</div>
+              {candidates.map(c => {
+                const checked = selectedIds.includes(c.id);
+                return (
+                  <button key={c.id} onClick={() => toggle(c.id)}
+                    className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-left transition-colors ${checked ? 'bg-[#007AFF14]' : 'bg-iosbg'}`}>
+                    <CheckCircle checked={checked} />
+                    <span className="flex-1 min-w-0">
+                      <span className="block font-semibold text-[15px] truncate">{c.name}</span>
+                      <span className="block text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(c)}</span>
+                    </span>
+                    <span className="text-[11px] text-iossecondary shrink-0">{c.fromWorkout}</span>
+                  </button>
+                );
+              })}
+            </>
+          )}
+        </div>
+
+        {candidates.length > 0 && (
+          <div className="px-4 py-3 border-t border-iosseparator shrink-0">
+            <button onClick={handleAdd} disabled={selectedIds.length === 0}
+              className={`w-full py-3.5 rounded-2xl font-semibold text-[16px] transition ${
+                selectedIds.length ? 'bg-iosblue text-white' : 'bg-iosseparator text-iossecondary'
+              }`}>
+              {selectedIds.length === 0 ? 'Select exercises to add'
+                : `Add ${selectedIds.length} exercise${selectedIds.length > 1 ? 's' : ''}`}
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -1519,6 +1631,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
   const total = workout.exercises.length;
   const [editList, setEditList] = useState(null); // non-null = reorder/edit mode is active
   const [settingsId, setSettingsId] = useState(null); // exercise whose settings sheet is open
+  const [addOpen, setAddOpen] = useState(false); // the round + picker
   const sortableContainerRef = useRef(null);
   const sortableInstanceRef = useRef(null);
 
@@ -1563,13 +1676,31 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
   function cancelSettings() {
     // Backing out of a brand-new, never-named exercise drops it again, so
     // cancelling never leaves a blank row behind.
-    if (editList && settingsEx && !settingsEx.name) setEditList(prev => prev.filter(e => e.id !== settingsId));
+    if (settingsEx && !settingsEx.name) {
+      if (editList) setEditList(prev => prev.filter(e => e.id !== settingsId));
+      else onSaveWorkout({ ...workout, exercises: workout.exercises.filter(e => e.id !== settingsId) });
+    }
     setSettingsId(null);
   }
+  // A brand-new exercise goes straight into the list it was added from (the
+  // draft in edit mode, the workout itself otherwise) and opens its settings
+  // — so writing one down never detours through a mode you then have to
+  // confirm your way out of. Cancelling removes it again (see cancelSettings).
   function addExercise() {
     const created = ex('', '');
-    setEditList(prev => (prev || workout.exercises.map(e => ({ ...e }))).concat(created));
+    setAddOpen(false);
+    if (editList) setEditList(prev => withTrailingSupersetCleared(prev).concat(created));
+    else onSaveWorkout({ ...workout, exercises: withTrailingSupersetCleared(workout.exercises).concat(created) });
     setSettingsId(created.id);
+  }
+  // Pulling in exercises you already have elsewhere: each one arrives as its
+  // own copy (fresh id, no superset link) carrying its times and weight, so
+  // editing it here never reaches back into the workout it came from.
+  function addFromOtherWorkouts(chosen) {
+    const copies = chosen.map(c => ({ ...normalizeExercise(c), id: uid('ex'), supersetWithNext: false }));
+    if (editList) setEditList(prev => withTrailingSupersetCleared(prev).concat(copies));
+    else onSaveWorkout({ ...workout, exercises: withTrailingSupersetCleared(workout.exercises).concat(copies) });
+    setAddOpen(false);
   }
   function confirmEdits() {
     onSaveWorkout({ ...workout, exercises: editList.filter(e => e.name) });
@@ -1592,6 +1723,29 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
       onDelete={deleteFromSettings}
     />
   ) : null;
+
+  const addSheet = addOpen ? (
+    <AddExerciseSheet
+      workout={workout}
+      workouts={workouts}
+      onCancel={() => setAddOpen(false)}
+      onAdd={addFromOtherWorkouts}
+      onCreateNew={addExercise}
+    />
+  ) : null;
+
+  // Floating add button. It is pinned to the viewport but kept inside the
+  // app's own column on wider screens by an invisible full-width track, and
+  // it clears the tab bar (and the home indicator) rather than sitting on it.
+  const addButton = (
+    <div className="fixed left-1/2 -translate-x-1/2 w-full max-w-md px-4 flex justify-end pointer-events-none z-30"
+      style={{ bottom: 'calc(env(safe-area-inset-bottom) + 76px)' }}>
+      <button onClick={() => setAddOpen(true)} aria-label="Add exercise" title="Add exercise"
+        className="pointer-events-auto w-14 h-14 rounded-full bg-iosblue text-white shadow-[0_8px_24px_rgba(0,122,255,0.4)] flex items-center justify-center active:scale-95 transition">
+        <PlusIcon className="w-7 h-7" strokeWidth="2.4" />
+      </button>
+    </div>
+  );
 
   if (editList) {
     return (
@@ -1628,7 +1782,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
           ))}
         </div>
 
-        <button onClick={addExercise}
+        <button onClick={() => setAddOpen(true)}
           className="w-full py-2.5 rounded-full bg-ioscard text-[14px] font-medium text-iosblue shadow-[0_4px_20px_rgba(0,0,0,0.04)]">
           + Add exercise
         </button>
@@ -1639,6 +1793,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
         </button>
 
         {settingsSheet}
+        {addSheet}
       </div>
     );
   }
@@ -1680,17 +1835,17 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
         ))}
       </div>
 
-      {total === 0 ? (
-        <button onClick={addExercise} className="w-full py-3 rounded-2xl bg-iosblue text-white font-semibold text-[15px]">
-          + Add your first exercise
-        </button>
-      ) : (
+      {total > 0 && (
         <button onClick={onResetProgress} className="w-full py-3 rounded-2xl bg-iosseparator text-[15px] font-medium text-ioslabel">
           Reset Checkmarks
         </button>
       )}
+      {/* The floating + overlaps the end of the list, so leave it room. */}
+      <div className="h-16 shrink-0" aria-hidden="true" />
 
+      {addButton}
       {settingsSheet}
+      {addSheet}
     </div>
   );
 }
@@ -1932,7 +2087,7 @@ function App() {
         // supersetWithNext is reset — the exercise it was paired with lives
         // in the source workout, not this one, so pairing it here by default
         // would silently (and wrongly) merge it with whatever ends up next.
-        ? { ...w, exercises: [...w.exercises, { ...exercise, id: uid('ex'), supersetWithNext: false }] }
+        ? { ...w, exercises: [...withTrailingSupersetCleared(w.exercises), { ...exercise, id: uid('ex'), supersetWithNext: false }] }
         : w),
     }));
   }
