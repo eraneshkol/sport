@@ -310,14 +310,23 @@ function SegmentedControl({ options, value, onChange }) {
 }
 
 // The running timer, reduced to the two things worth glancing at from
-// another screen: how long is left, and whether that's work or rest. It
-// rides along the top of the tab bar rather than floating over the page, so
-// it never covers what you are actually doing; tapping it opens the Timer.
+// another screen: how long is left, and whether that's work or rest.
+//
+// It sits at the top of the screen, above everything. That is what makes it
+// survive the places you actually lose sight of the clock — editing a
+// workout, an exercise's settings, a time picker — because every one of
+// those is a sheet that slides up from the bottom and covers the bottom
+// chrome. Nothing in this app opens downward, so up here it never collides
+// with anything, and it stays in one fixed place instead of dodging sheets.
+const MINI_TIMER_HEIGHT = 32; // h-8 — fixed, so the page can offset by it exactly
+
 function MiniTimerBar({ status, onOpen }) {
   const color = status.phase === 'rest' ? '#007AFF' : status.phase === 'countdown' ? '#8E8E93' : '#33A34F';
   return (
+    <div className="fixed top-0 left-0 right-0 z-[60] bg-white/90 backdrop-blur-md border-b border-iosseparator"
+      style={{ paddingTop: 'env(safe-area-inset-top)' }}>
     <button onClick={onOpen} title="Open the timer"
-      className={`w-full max-w-md mx-auto flex items-center justify-center gap-2.5 py-1.5 border-b border-iosseparator transition-opacity ${
+      className={`w-full max-w-md mx-auto h-8 flex items-center justify-center gap-2.5 transition-opacity ${
         status.running ? '' : 'opacity-60'
       }`}>
       <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
@@ -327,10 +336,11 @@ function MiniTimerBar({ status, onOpen }) {
       <span className="text-[15px] font-bold font-mono tabular-nums">{fmtTime(status.remaining)}</span>
       {!status.running && <span className="text-[11px] text-iossecondary font-medium">Paused</span>}
     </button>
+    </div>
   );
 }
 
-function TabBar({ tab, onChange, timerStatus, onOpenTimer }) {
+function TabBar({ tab, onChange }) {
   const items = [
     { value: 'workouts', label: 'Workouts', Icon: ChecklistIcon },
     { value: 'timer', label: 'Timer', Icon: ClockIcon },
@@ -338,7 +348,6 @@ function TabBar({ tab, onChange, timerStatus, onOpenTimer }) {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/85 backdrop-blur-md border-t border-iosseparator"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
-      {timerStatus && <MiniTimerBar status={timerStatus} onOpen={onOpenTimer} />}
       <div className="max-w-md mx-auto flex">
         {items.map(({ value, label, Icon }) => {
           const active = tab === value;
@@ -2020,7 +2029,10 @@ function App() {
     && ['countdown', 'work', 'rest'].includes(timerStatus.phase)) ? timerStatus : null;
   // One number for everything that has to clear the bottom chrome: the
   // page's own padding and the floating + inside the Workouts tab.
-  const bottomChrome = `calc(env(safe-area-inset-bottom) + ${miniTimer ? 118 : 84}px)`;
+  const bottomChrome = 'calc(env(safe-area-inset-bottom) + 84px)';
+  // ...and one for the strip at the top, so the page starts below it rather
+  // than under it. Exact, not a guess: the bar's height is fixed.
+  const topChrome = miniTimer ? `calc(env(safe-area-inset-top) + ${MINI_TIMER_HEIGHT}px)` : '0px';
 
   // The exercise the Timer should adapt its timing to: a manual override (if
   // still unchecked) takes priority, otherwise it's simply the first
@@ -2200,8 +2212,12 @@ function App() {
   }
 
   return (
-    <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-6 gap-5"
-      style={{ '--bottom-chrome': bottomChrome, paddingBottom: 'var(--bottom-chrome)' }}>
+    <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 gap-5"
+      style={{
+        '--bottom-chrome': bottomChrome,
+        paddingTop: `calc(1.5rem + ${topChrome})`,
+        paddingBottom: 'var(--bottom-chrome)',
+      }}>
       <div className={tab === 'timer' ? 'contents' : 'hidden'}>
         <TimerTab
           soundEnabled={state.soundEnabled}
@@ -2238,8 +2254,10 @@ function App() {
         />
       </div>
 
-      <TabBar tab={tab} onChange={(t) => { blurActiveInput(); setTab(t); }}
-        timerStatus={miniTimer} onOpenTimer={() => { blurActiveInput(); setTab('timer'); }} />
+      {miniTimer && (
+        <MiniTimerBar status={miniTimer} onOpen={() => { blurActiveInput(); setTab('timer'); }} />
+      )}
+      <TabBar tab={tab} onChange={(t) => { blurActiveInput(); setTab(t); }} />
       <CompletionOverlay celebration={celebration} />
     </div>
   );
