@@ -309,7 +309,28 @@ function SegmentedControl({ options, value, onChange }) {
   );
 }
 
-function TabBar({ tab, onChange }) {
+// The running timer, reduced to the two things worth glancing at from
+// another screen: how long is left, and whether that's work or rest. It
+// rides along the top of the tab bar rather than floating over the page, so
+// it never covers what you are actually doing; tapping it opens the Timer.
+function MiniTimerBar({ status, onOpen }) {
+  const color = status.phase === 'rest' ? '#007AFF' : status.phase === 'countdown' ? '#8E8E93' : '#33A34F';
+  return (
+    <button onClick={onOpen} title="Open the timer"
+      className={`w-full max-w-md mx-auto flex items-center justify-center gap-2.5 py-1.5 border-b border-iosseparator transition-opacity ${
+        status.running ? '' : 'opacity-60'
+      }`}>
+      <span className="w-2 h-2 rounded-full shrink-0" style={{ background: color }} />
+      <span className="text-[12px] font-semibold uppercase tracking-wide" style={{ color }}>
+        {PHASE_LABELS[status.phase]}
+      </span>
+      <span className="text-[15px] font-bold font-mono tabular-nums">{fmtTime(status.remaining)}</span>
+      {!status.running && <span className="text-[11px] text-iossecondary font-medium">Paused</span>}
+    </button>
+  );
+}
+
+function TabBar({ tab, onChange, timerStatus, onOpenTimer }) {
   const items = [
     { value: 'workouts', label: 'Workouts', Icon: ChecklistIcon },
     { value: 'timer', label: 'Timer', Icon: ClockIcon },
@@ -317,6 +338,7 @@ function TabBar({ tab, onChange }) {
   return (
     <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/85 backdrop-blur-md border-t border-iosseparator"
       style={{ paddingBottom: 'env(safe-area-inset-bottom)' }}>
+      {timerStatus && <MiniTimerBar status={timerStatus} onOpen={onOpenTimer} />}
       <div className="max-w-md mx-auto flex">
         {items.map(({ value, label, Icon }) => {
           const active = tab === value;
@@ -534,7 +556,7 @@ const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest
 const COUNTDOWN_SEC = 3;
 
 function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, activeWorkoutId, workoutUntouched,
-  currentGroup, nextExercise, autoRun, onAutoExerciseComplete, onStopAuto }) {
+  currentGroup, nextExercise, autoRun, onAutoExerciseComplete, onStopAuto, onStatus }) {
   const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
   const remainingRef = useRef(DEFAULT_WORK_SEC);
@@ -978,6 +1000,15 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
     if (runningRef.current) intervalRef.current = setInterval(tick, 200);
     forceRender();
   }
+
+  // Hand the phase and the whole-second countdown up to the App so it can
+  // show them from any screen (see MiniTimerBar). The engine itself renders
+  // five times a second for a smooth ring; this only fires when one of the
+  // three values a glance can actually read has changed.
+  useEffect(() => {
+    if (onStatus) onStatus({ phase, remaining, running });
+    // eslint-disable-next-line
+  }, [phase, remaining, running]);
 
   const CIRC = 2 * Math.PI * 90;
   // Uses continuous elapsed time (not the rounded whole-second `remaining`)
@@ -1778,7 +1809,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
   // it clears the tab bar (and the home indicator) rather than sitting on it.
   const addButton = (
     <div className="fixed left-1/2 -translate-x-1/2 w-full max-w-md px-4 flex justify-end pointer-events-none z-30"
-      style={{ bottom: 'calc(env(safe-area-inset-bottom) + 76px)' }}>
+      style={{ bottom: 'calc(var(--bottom-chrome) - 8px)' }}>
       <button onClick={() => setAddOpen(true)} aria-label="Add exercise" title="Add exercise"
         className="pointer-events-auto w-14 h-14 rounded-full bg-iosblue text-white shadow-[0_8px_24px_rgba(0,122,255,0.4)] flex items-center justify-center active:scale-95 transition">
         <PlusIcon className="w-7 h-7" strokeWidth="2.4" />
@@ -1980,6 +2011,16 @@ function App() {
 
   const [tab, setTab] = useState('timer');
   const [celebration, setCelebration] = useState(null);
+  const [timerStatus, setTimerStatus] = useState(null);
+
+  // The mini bar is only worth the space while something is actually
+  // counting down, and never on the Timer tab itself — the real thing is
+  // already there.
+  const miniTimer = (timerStatus && tab !== 'timer'
+    && ['countdown', 'work', 'rest'].includes(timerStatus.phase)) ? timerStatus : null;
+  // One number for everything that has to clear the bottom chrome: the
+  // page's own padding and the floating + inside the Workouts tab.
+  const bottomChrome = `calc(env(safe-area-inset-bottom) + ${miniTimer ? 118 : 84}px)`;
 
   // The exercise the Timer should adapt its timing to: a manual override (if
   // still unchecked) takes priority, otherwise it's simply the first
@@ -2159,7 +2200,8 @@ function App() {
   }
 
   return (
-    <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-6 gap-5" style={{ paddingBottom: 'calc(env(safe-area-inset-bottom) + 84px)' }}>
+    <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 pt-6 gap-5"
+      style={{ '--bottom-chrome': bottomChrome, paddingBottom: 'var(--bottom-chrome)' }}>
       <div className={tab === 'timer' ? 'contents' : 'hidden'}>
         <TimerTab
           soundEnabled={state.soundEnabled}
@@ -2173,6 +2215,7 @@ function App() {
           autoRun={autoRun}
           onAutoExerciseComplete={completeAutoExercise}
           onStopAuto={() => setAutoRun(false)}
+          onStatus={setTimerStatus}
         />
       </div>
 
@@ -2195,7 +2238,8 @@ function App() {
         />
       </div>
 
-      <TabBar tab={tab} onChange={(t) => { blurActiveInput(); setTab(t); }} />
+      <TabBar tab={tab} onChange={(t) => { blurActiveInput(); setTab(t); }}
+        timerStatus={miniTimer} onOpenTimer={() => { blurActiveInput(); setTab('timer'); }} />
       <CompletionOverlay celebration={celebration} />
     </div>
   );
