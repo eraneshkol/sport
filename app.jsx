@@ -145,6 +145,16 @@ const DEFAULT_SIDES_BY_NAME = {
   'Side Plank Dips': 'alternating',
 };
 
+// Added after three months of running this program: every cycle had three
+// presses (bench, shoulder press, incline) against two pulls, and nothing at
+// all for the rear delts or the mid-back. That is the imbalance that creeps
+// up over months rather than announcing itself. One light, controlled pull
+// balances it — short work interval, since it is an accessory and the point
+// is control, not load.
+function facePullExercise() {
+  return ex('Face Pull', 'Pull a rope from the high pulley toward your face, elbows high and wide, squeezing your shoulder blades together.', 'together', 3, 60, 30);
+}
+
 function defaultWorkouts() {
   return [
     {
@@ -156,6 +166,7 @@ function defaultWorkouts() {
         ex('Dumbbell Bench Press', EXERCISE_DESCRIPTIONS['Dumbbell Bench Press'][1]),
         ex('Lat Pulldown', EXERCISE_DESCRIPTIONS['Lat Pulldown'][1]),
         ex('Seated DB Shoulder Press', EXERCISE_DESCRIPTIONS['Seated DB Shoulder Press'][1]),
+        facePullExercise(),
         ex('Dumbbell Bicep Curls', EXERCISE_DESCRIPTIONS['Dumbbell Bicep Curls'][1]),
         ex('Plank Mountain Climbers', EXERCISE_DESCRIPTIONS['Plank Mountain Climbers'][1]),
       ],
@@ -247,6 +258,21 @@ function migrateState(loaded) {
       });
     }),
   }));
+  // Changing defaultWorkouts() only ever reaches a fresh install, so an
+  // exercise the program is missing has to be added to the saved workout
+  // itself — once. Guarded three ways: a flag so it never runs twice, a name
+  // check so it is never duplicated, and a scope of exactly one insertion, so
+  // nothing else in the workout is touched.
+  if (!state.seededFacePull) {
+    state.workouts = state.workouts.map(w => {
+      if (w.id !== 'wk-a') return w;
+      if (w.exercises.some(e => sameExerciseName(e.name, 'Face Pull'))) return w;
+      const afterPress = w.exercises.findIndex(e => sameExerciseName(e.name, 'Seated DB Shoulder Press'));
+      const at = afterPress === -1 ? w.exercises.length : afterPress + 1;
+      return { ...w, exercises: insertExercisesAt(w.exercises, at, [facePullExercise()]) };
+    });
+    state.seededFacePull = true;
+  }
   if (!state.workoutProgress) state.workoutProgress = {};
   if (!state.activeWorkoutId || !state.workouts.find(w => w.id === state.activeWorkoutId)) {
     state.activeWorkoutId = state.workouts[0].id;
