@@ -6,29 +6,11 @@
 <title>Fitness Timer</title>
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#F2F2F7">
-<script src="https://cdn.tailwindcss.com"></script>
-<script>
-  tailwind.config = {
-    theme: {
-      extend: {
-        fontFamily: {
-          sf: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Text"', '"Segoe UI"', 'Roboto', 'sans-serif'],
-        },
-        colors: {
-          iosbg: '#F2F2F7',
-          ioscard: '#FFFFFF',
-          iosblue: '#007AFF',
-          iosgreen: '#34C759',
-          iosred: '#FF3B30',
-          iosorange: '#FF9500',
-          iossecondary: '#8E8E93',
-          iosseparator: '#E5E5EA',
-          ioslabel: '#1C1C1E',
-        },
-      },
-    },
-  };
-</script>
+<!-- Tailwind used to be a just-in-time compiler pulled from cdn.tailwindcss.com
+     on every launch. It is now a stylesheet built ahead of time from the same
+     theme, so the app needs nothing from the network to render. Rebuild it
+     after changing classes in app.jsx or here - see vendor/README.md. -->
+<link rel="stylesheet" href="vendor/tailwind.css">
 <style>
   html, body { background: #F2F2F7; height: 100%; }
   body {
@@ -116,11 +98,15 @@
   }, { passive: false });
 </script>
 
-<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
-<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
-<script src="https://unpkg.com/@babel/standalone@7.24.7/babel.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/sortablejs@1.15.2/Sortable.min.js"></script>
+<!-- Every library the app needs, served from the project itself. Loading
+     these from a CDN meant a dead CDN, a blocked domain or a gym basement
+     with no signal was a blank screen: nothing here is optional, and React
+     or Babel failing to arrive stops the app before it renders anything. -->
+<script src="vendor/react.js"></script>
+<script src="vendor/react-dom.js"></script>
+<script src="vendor/babel.js"></script>
+<script src="vendor/confetti.js"></script>
+<script src="vendor/sortable.js"></script>
 <script>
   fetch('app.jsx', { cache: 'no-store' })
     .then(r => r.text())
