@@ -200,11 +200,21 @@ function defaultState() {
 }
 
 function loadRawState() {
+  let raw = null;
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) {
+    // Saved state that won't parse is the one path here that can cost real
+    // data: the app falls back to defaults, and the very first save then
+    // writes those straight over whatever was there — months of recorded
+    // weights gone, with nothing left to recover from. So keep the original
+    // bytes under their own key first. Unreadable to the app, but readable
+    // by hand, which is the difference between damaged and lost.
     console.error('Failed to load state', e);
+    try {
+      if (raw) localStorage.setItem(STORAGE_KEY + '.unreadable-' + Date.now(), raw);
+    } catch (e2) { /* storage full or blocked — nothing further we can do */ }
   }
   return null;
 }
