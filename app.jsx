@@ -283,17 +283,33 @@ function migrateState(loaded) {
     });
     state.seededFacePull = true;
   }
+  // Finishing a workout hands over to the next one in rotation, so a rotation
+  // holding fewer than two workouts means a finish goes nowhere — which is
+  // felt as "it stopped switching between A and B at the end". That is easy
+  // to end up with by accident: a workout rebuilt from scratch starts out of
+  // rotation. Put the first two back in, once, when the hand-off has nowhere
+  // to go. Anything beyond those two keeps whatever it was set to.
+  if (!state.rotationRepaired) {
+    if (state.workouts.filter(w => w.inRotation !== false).length < 2 && state.workouts.length >= 2) {
+      const pair = state.workouts.slice(0, 2).map(w => w.id);
+      state.workouts = state.workouts.map(w => pair.includes(w.id) ? { ...w, inRotation: true } : w);
+    }
+    state.rotationRepaired = true;
+  }
   if (!state.workoutProgress) state.workoutProgress = {};
   if (!state.activeWorkoutId || !state.workouts.find(w => w.id === state.activeWorkoutId)) {
     state.activeWorkoutId = state.workouts[0].id;
   }
   if (typeof state.soundEnabled !== 'boolean') state.soundEnabled = true;
   if (!state.currentExerciseOverride) state.currentExerciseOverride = {};
-  // Auto used to be "this workout is auto-running", something you started by
-  // hand each time and that switched itself off whenever you changed or
-  // finished a workout. It is now simply on unless you turn it off, so the
-  // per-workout id is dropped and the preference defaults to on.
-  if (typeof state.autoRun !== 'boolean') state.autoRun = true;
+  // Auto is on every time the app opens, whatever it was left at. Turning it
+  // off is for the session in front of you — one odd workout you want to
+  // step through by hand — and should never quietly follow you into the next
+  // one, where its being off is invisible until the timer fails to advance.
+  // It is deliberately NOT remembered: this line overwrites whatever was
+  // saved, and the saved value only carries the choice across a reload
+  // mid-session.
+  state.autoRun = true;
   delete state.autoRunWorkoutId;
   return state;
 }
