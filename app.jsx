@@ -708,7 +708,23 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
   }, [running]);
   useEffect(() => {
     function onVisible() {
-      if (document.visibilityState === 'visible' && runningRef.current) acquireWakeLock();
+      if (document.visibilityState !== 'visible') return;
+      if (runningRef.current) acquireWakeLock();
+      // Coming back to the app is the one moment iOS reliably lets audio
+      // restart: it parks the context while another app is in front, and
+      // nothing else would ever ask for it back, so the rest of the workout
+      // would run silently. Uses the refs directly — this listener is
+      // registered once and must not depend on anything it captured then.
+      const ctx = audioCtxRef.current;
+      if (ctx && ctx.state !== 'running' && ctx.state !== 'closed') {
+        const r = ctx.resume();
+        if (r && r.catch) r.catch(() => {});
+      }
+      const el = audioElRef.current;
+      if (el && el.paused) {
+        const p = el.play();
+        if (p && p.catch) p.catch(() => {});
+      }
     }
     document.addEventListener('visibilitychange', onVisible);
     return () => document.removeEventListener('visibilitychange', onVisible);
@@ -785,8 +801,38 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
   // tabs that are actively playing an <audio>/<video> element than for raw
   // Web Audio oscillators, which are normally treated as "ambient" and can be
   // throttled or silenced once the app is minimized.
+  // Every tone in this app is scheduled from inside a phase transition, so a
+  // throw on the way to the speaker abandons that transition half-finished:
+  // the countdown freezes and the workout stops moving between exercises.
+  // iOS throws here for reasons that have nothing to do with this app —
+  // another app seizing the audio session, a context the system closed while
+  // we were in the background. A silent workout is a nuisance; a stopped one
+  // ends the session. So sound is wrapped, and a failed context is thrown
+  // away rather than kept: the next tone builds a fresh one, which is how
+  // the sound comes back at all instead of staying dead until a reload.
+  const soundBrokenRef = useRef(false);
+  function soundFailed(e) {
+    if (!soundBrokenRef.current) {
+      soundBrokenRef.current = true;
+      console.error('Sound failed; the timer carries on without it', e);
+    }
+    const dead = audioCtxRef.current;
+    audioCtxRef.current = null;
+    compressorRef.current = null;
+    // Close it, or iOS keeps counting it against the handful of audio
+    // contexts a page is allowed before it refuses to create any more.
+    if (dead && dead.close) { try { dead.close(); } catch (e2) { /* already gone */ } }
+  }
+
   function ensureAudio() {
     if (!soundEnabled) return null;
+    // A closed context can never be resumed, only replaced — without this the
+    // app stays silent for the rest of the session with sound still showing
+    // as on.
+    if (audioCtxRef.current && audioCtxRef.current.state === 'closed') {
+      audioCtxRef.current = null;
+      compressorRef.current = null;
+    }
     if (!audioCtxRef.current) {
       const ctx = new (window.AudioContext || window.webkitAudioContext)();
       const compressor = ctx.createDynamicsCompressor();
@@ -818,7 +864,13 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
       // priority for now — see the reply in chat for the full tradeoff.
       try { if ('audioSession' in navigator) navigator.audioSession.type = 'transient'; } catch (e) {}
     }
-    if (audioCtxRef.current.state === 'suspended') audioCtxRef.current.resume();
+    // 'suspended' is the standard idle state; Safari also parks a context at
+    // 'interrupted' when a call or another app takes the audio session. Both
+    // come back with resume(), so ask whenever it isn't actually running.
+    if (audioCtxRef.current.state !== 'running') {
+      const r = audioCtxRef.current.resume();
+      if (r && r.catch) r.catch(() => {});
+    }
     if (audioElRef.current && audioElRef.current.paused) {
       const p = audioElRef.current.play();
       if (p && p.catch) p.catch(() => {});
@@ -855,34 +907,38 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
   const TICK_DURATION = 0.10;
 
   function playChime(type) {
-    const ctx = ensureAudio();
-    if (!ctx) return;
-    const t0 = ctx.currentTime;
-    if (type === 'rest') {
-      // Descending pair, same high "sports watch" register as the ticks.
-      playBeep(ctx, 2349, t0, 0.11, 1, 'square', 8);
-      playBeep(ctx, 1760, t0 + 0.14, 0.15, 1, 'square', 8);
-    } else if (type === 'work') {
-      // Ascending pair — mirror image of 'rest' so the two are easy to tell apart by ear.
-      playBeep(ctx, 1760, t0, 0.11, 1, 'square', 8);
-      playBeep(ctx, 2349, t0 + 0.14, 0.15, 1, 'square', 8);
-    } else if (type === 'finish') {
-      // The exact same voice as the countdown ticks (same pitch/waveform/
-      // detune) so finishing all rounds is instantly recognizable as
-      // "that countdown sound again" — just 4 pulses instead of 3, and
-      // each one held a bit longer.
-      for (let i = 0; i < 4; i++) {
-        playBeep(ctx, 2637, t0 + i * 0.24, 0.16, 1, 'square', 10);
+    try {
+      const ctx = ensureAudio();
+      if (!ctx) return;
+      const t0 = ctx.currentTime;
+      if (type === 'rest') {
+        // Descending pair, same high "sports watch" register as the ticks.
+        playBeep(ctx, 2349, t0, 0.11, 1, 'square', 8);
+        playBeep(ctx, 1760, t0 + 0.14, 0.15, 1, 'square', 8);
+      } else if (type === 'work') {
+        // Ascending pair — mirror image of 'rest' so the two are easy to tell apart by ear.
+        playBeep(ctx, 1760, t0, 0.11, 1, 'square', 8);
+        playBeep(ctx, 2349, t0 + 0.14, 0.15, 1, 'square', 8);
+      } else if (type === 'finish') {
+        // The exact same voice as the countdown ticks (same pitch/waveform/
+        // detune) so finishing all rounds is instantly recognizable as
+        // "that countdown sound again" — just 4 pulses instead of 3, and
+        // each one held a bit longer.
+        for (let i = 0; i < 4; i++) {
+          playBeep(ctx, 2637, t0 + i * 0.24, 0.16, 1, 'square', 10);
+        }
       }
-    }
+    } catch (e) { soundFailed(e); }
   }
 
   // Sharp, piercing, high-pitched countdown tick — deliberately far higher
   // than the chimes below so it reads unmistakably as "counting down."
   function playTick(n) {
-    const ctx = ensureAudio();
-    if (!ctx) return;
-    playBeep(ctx, 2637, ctx.currentTime, TICK_DURATION, 1, 'square', 10);
+    try {
+      const ctx = ensureAudio();
+      if (!ctx) return;
+      playBeep(ctx, 2637, ctx.currentTime, TICK_DURATION, 1, 'square', 10);
+    } catch (e) { soundFailed(e); }
   }
 
   // Fires once, right as the countdown hits zero and work actually begins.
@@ -894,11 +950,13 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
   // layer so it still cuts through on small phone speakers, not just louder
   // on paper.
   function playGoSignal() {
-    const ctx = ensureAudio();
-    if (!ctx) return;
-    const t0 = ctx.currentTime;
-    playBeep(ctx, 900, t0, TICK_DURATION * 2, 3, 'sine', 4);
-    playBeep(ctx, 1800, t0, TICK_DURATION * 2, 1.4, 'sine', 4);
+    try {
+      const ctx = ensureAudio();
+      if (!ctx) return;
+      const t0 = ctx.currentTime;
+      playBeep(ctx, 900, t0, TICK_DURATION * 2, 3, 'sine', 4);
+      playBeep(ctx, 1800, t0, TICK_DURATION * 2, 1.4, 'sine', 4);
+    } catch (e) { soundFailed(e); }
   }
 
   function finishRoundOrDone() {
