@@ -1199,6 +1199,13 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
       ) : (
         <div className="text-center text-[11px] text-iossecondary -mt-4">Tap the ⚙ next to an exercise to set its times</div>
       )}
+      {!autoRun && phase === 'done' && (
+        <div className="flex items-center justify-center gap-2 -mt-2">
+          <span className="text-[12px] text-iossecondary">
+            Auto is off — this exercise is done and nothing follows on its own.
+          </span>
+        </div>
+      )}
       {autoRun && (
         <div className="flex items-center justify-center gap-2 -mt-2">
           <span className="text-[11px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2.5 py-1 rounded-full">Auto</span>
@@ -1997,14 +2004,22 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
       <div className="flex items-center justify-between">
         <h1 className="text-[28px] font-bold">Workouts</h1>
         <div className="flex items-center gap-1">
-          {/* A switch, not a launcher: it is on out of the box and decides
-              whether finishing one exercise rolls straight into the next.
-              The run itself still begins with Start on the Timer. */}
-          <button onClick={onToggleAuto} aria-pressed={autoOn} title={autoOn ? 'Auto-advance is on' : 'Auto-advance is off'}
-            className={`flex items-center gap-1.5 px-3.5 py-1.5 rounded-full text-[13px] font-semibold transition ${
-              autoOn ? 'bg-iosblue text-white' : 'bg-iosseparator text-iossecondary'
-            }`}>
-            {autoOn ? <PlayIcon className="w-3.5 h-3.5" /> : <PauseIcon className="w-3.5 h-3.5" />} Auto
+          {/* Drawn as a switch rather than a button with an icon on it: with a
+              play icon it reads as "start the workout", so pressing it — when
+              it is already on, which is how every session begins — silently
+              turns off the very thing it looks like it starts, and the timer
+              then stops after one exercise. A switch can only be read one
+              way, and it says which way it is set. */}
+          <button onClick={onToggleAuto} role="switch" aria-checked={autoOn}
+            title={autoOn ? 'Auto-advance is on' : 'Auto-advance is off'}
+            className="flex items-center gap-2 pl-3.5 pr-1.5 py-1 rounded-full bg-iosseparator">
+            <span className="text-[13px] font-semibold text-ioslabel">Auto</span>
+            <span className={`text-[11px] font-bold uppercase tracking-wide ${autoOn ? 'text-iosgreen' : 'text-iossecondary'}`}>
+              {autoOn ? 'On' : 'Off'}
+            </span>
+            <span className={`relative w-9 h-5 rounded-full shrink-0 transition-colors ${autoOn ? 'bg-iosgreen' : 'bg-[#C7C7CC]'}`}>
+              <span className={`absolute top-0.5 w-4 h-4 rounded-full bg-white shadow transition-all ${autoOn ? 'left-[18px]' : 'left-0.5'}`} />
+            </span>
           </button>
           <IconButton onClick={onManage} title="Manage workouts"><GearIcon className="w-5 h-5" /></IconButton>
         </div>
