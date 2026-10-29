@@ -1610,6 +1610,11 @@ function WorkoutManageView({ workouts, onBack, onEdit, onAdd, onDelete, onToggle
           </Card>
         ))}
       </div>
+      {/* Which copy of the app is actually running. Without it, "did the
+          update reach the phone?" cannot be answered from the phone. */}
+      <div className="text-center text-[11px] text-iossecondary">
+        build {(typeof window !== 'undefined' && window.__BUILD__) || 'dev'}
+      </div>
     </div>
   );
 }
@@ -2373,4 +2378,26 @@ function App() {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+// A component that throws tears down the whole tree and leaves the page
+// blank — the same white screen as a failed load, with nothing to report.
+// This hands the failure to the panel in index.html instead, which names it
+// and says which build it happened on.
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+  componentDidCatch(error) {
+    if (window.__appCrash) window.__appCrash(String((error && error.message) || error));
+  }
+  render() {
+    return this.state.failed ? null : this.props.children;
+  }
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(
+  <ErrorBoundary><App /></ErrorBoundary>
+);
