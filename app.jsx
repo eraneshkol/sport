@@ -75,10 +75,10 @@ function normalizeExercise(e) {
 
 // One-line "what this exercise does" recap, shown wherever an exercise is
 // listed but not opened — the checklist card and the workout editor.
-function exerciseSummary(e) {
+function exerciseSummary(e, unit) {
   const parts = [`Work ${fmtTime(exWorkSec(e))}`, `Rest ${fmtTime(exRestSec(e))}`, `${exSets(e)} sets`];
   if (e.sides === 'alternating') parts.push('One side');
-  if (e.weightKg != null) parts.push(`${formatWeightKg(e.weightKg)} kg`);
+  if (e.weightKg != null) parts.push(formatWeight(e.weightKg, unit));
   return parts.join(' · ');
 }
 
@@ -87,6 +87,20 @@ function exerciseSummary(e) {
 const LB_PER_KG = 2.20462262185;
 function kgToLb(kg) { return kg * LB_PER_KG; }
 function lbToKg(lb) { return lb / LB_PER_KG; }
+// Weight is stored in kilograms and shown in whichever unit is selected, so
+// switching units never touches a single saved number — it is a lens, not a
+// conversion. Shown to one decimal: 49.6 lb reads as a weight, 49.60351 lb
+// reads as a bug, and the exact kilograms are what's kept either way.
+const WEIGHT_UNITS = ['lb', 'kg'];
+const WeightUnitContext = React.createContext('lb');
+function useWeightUnit() { return React.useContext(WeightUnitContext); }
+
+function formatWeight(kg, unit) {
+  if (kg == null) return '';
+  const n = unit === 'kg' ? kg : kgToLb(kg);
+  return `${Math.round(n * 10) / 10} ${unit}`;
+}
+
 function formatWeightKg(kg) {
   return (Math.round(kg * 100) / 100).toString();
 }
@@ -196,6 +210,7 @@ function defaultState() {
     soundEnabled: true,
     currentExerciseOverride: {},
     autoRun: true,
+    weightUnit: 'lb',
   };
 }
 
@@ -311,6 +326,9 @@ function migrateState(loaded) {
   // mid-session.
   state.autoRun = true;
   delete state.autoRunWorkoutId;
+  // Pounds unless you have picked otherwise. Unlike Auto, this one IS
+  // remembered: it is how you read your own numbers, not a per-session mode.
+  if (WEIGHT_UNITS.indexOf(state.weightUnit) === -1) state.weightUnit = 'lb';
   return state;
 }
 
@@ -388,6 +406,25 @@ function MiniTimerBar({ status, onOpen }) {
       <span className="text-[15px] font-bold font-mono tabular-nums">{fmtTime(status.remaining)}</span>
       {!status.running && <span className="text-[11px] text-iossecondary font-medium">Paused</span>}
     </button>
+    </div>
+  );
+}
+
+// One tap to read every weight in the app the other way round. Both units
+// are on it with the live one lit, so it says what it is set to as well as
+// what it does — the same reason the Auto control is a switch.
+function UnitToggle({ unit, onChange }) {
+  return (
+    <div className="flex items-center bg-iosseparator rounded-full p-0.5 shrink-0">
+      {WEIGHT_UNITS.map(u => (
+        <button key={u} onClick={() => onChange(u)} aria-pressed={unit === u}
+          title={`Show weights in ${u === 'lb' ? 'pounds' : 'kilograms'}`}
+          className={`px-2.5 py-1 rounded-full text-[12px] font-semibold transition-colors ${
+            unit === u ? 'bg-white text-ioslabel shadow-sm' : 'text-iossecondary'
+          }`}>
+          {u}
+        </button>
+      ))}
     </div>
   );
 }
@@ -617,7 +654,7 @@ const PHASE_LABELS = { idle: 'Ready', countdown: 'Get Ready', work: 'Work', rest
 const COUNTDOWN_SEC = 3;
 
 function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, activeWorkoutId, workoutUntouched,
-  currentGroup, nextExercise, autoRun, onAutoExerciseComplete, onStopAuto, onStatus }) {
+  currentGroup, nextExercise, autoRun, onAutoExerciseComplete, onStopAuto, onStatus, weightUnit, onSetWeightUnit }) {
   const phaseRef = useRef('idle'); // idle | countdown | work | rest | done
   const roundRef = useRef(1);
   const remainingRef = useRef(DEFAULT_WORK_SEC);
@@ -1142,7 +1179,7 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
     if (phase === 'work') {
       if (groupMemberIndexRef.current < groupRef.current.length - 1) {
         const upNext = groupRef.current[groupMemberIndexRef.current + 1];
-        const weight = upNext.weightKg != null ? ` (${formatWeightKg(upNext.weightKg)} kg ea)` : '';
+        const weight = upNext.weightKg != null ? ` (${formatWeight(upNext.weightKg, weightUnit)} ea)` : '';
         return `Next · ${upNext.name}${weight}`;
       }
       if (effectiveRef.current.restSec > 0) return `Next · Rest ${fmtTime(effectiveRef.current.restSec)}`;
@@ -1159,9 +1196,12 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between">
         <h1 className="text-[28px] font-bold">Timer</h1>
-        <IconButton onClick={onToggleSound} title="Toggle sound">
-          {soundEnabled ? <VolumeIcon className="w-5 h-5" /> : <MuteIcon className="w-5 h-5" />}
-        </IconButton>
+        <div className="flex items-center gap-2">
+          <UnitToggle unit={weightUnit} onChange={onSetWeightUnit} />
+          <IconButton onClick={onToggleSound} title="Toggle sound">
+            {soundEnabled ? <VolumeIcon className="w-5 h-5" /> : <MuteIcon className="w-5 h-5" />}
+          </IconButton>
+        </div>
       </div>
 
       <div className="flex flex-col items-center gap-0.5">
@@ -1194,7 +1234,7 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
       ) : activeMember ? (
         <div className="text-center text-[12px] text-iossecondary -mt-4">
           {activeMember.sides === 'alternating' ? 'One side at a time' : 'Both sides together'}
-          {activeMember.weightKg != null && ` · ${formatWeightKg(activeMember.weightKg)} kg ea`}
+          {activeMember.weightKg != null && ` · ${formatWeight(activeMember.weightKg, weightUnit)} ea`}
         </div>
       ) : (
         <div className="text-center text-[11px] text-iossecondary -mt-4">Tap the ⚙ next to an exercise to set its times</div>
@@ -1212,7 +1252,7 @@ function TimerTab({ soundEnabled, onToggleSound, currentExercise, workoutName, a
           {nextExercise && (
             <span className="text-[12px] text-iossecondary">
               Up next: {nextExercise.name}
-              {nextExercise.weightKg != null && ` (${formatWeightKg(nextExercise.weightKg)} kg ea)`}
+              {nextExercise.weightKg != null && ` (${formatWeight(nextExercise.weightKg, weightUnit)} ea)`}
             </span>
           )}
           <button onClick={onStopAuto} className="text-[12px] text-iosred font-medium">Stop</button>
@@ -1322,14 +1362,16 @@ function useLongPress(onLongPress, onClick) {
 // (and no category) holding some of it.
 function ExerciseSettingsSheet({ exercise, showSuperset, otherWorkouts, onCopyTo, onCancel, onSave, onDelete }) {
   const [draft, setDraft] = useState(() => ({ ...exercise }));
-  // Purely a display/entry choice — the exercise always stores weightKg, so
-  // flipping this only changes how the number in the box is read while typing.
-  const [weightUnit, setWeightUnit] = useState('kg');
+  // Entry starts in whichever unit the app is currently showing — typing 45
+  // into a box labelled lb while every card reads kg is how a wrong weight
+  // gets saved. Still only a reading of the box: the exercise stores kg.
+  const shownUnit = useWeightUnit();
+  const [weightUnit, setWeightUnit] = useState(shownUnit);
 
   function patch(p) { setDraft(d => ({ ...d, ...p })); }
 
   const weightDisplay = draft.weightKg == null ? ''
-    : (weightUnit === 'kg' ? formatWeightKg(draft.weightKg) : formatWeightKg(kgToLb(draft.weightKg)));
+    : formatWeightKg(weightUnit === 'kg' ? draft.weightKg : kgToLb(draft.weightKg));
 
   function handleWeightChange(raw) {
     if (raw.trim() === '') { patch({ weightKg: null }); return; }
@@ -1402,7 +1444,7 @@ function ExerciseSettingsSheet({ exercise, showSuperset, otherWorkouts, onCopyTo
               <input type="number" min="0" step="0.5" placeholder="—" value={weightDisplay}
                 onChange={e => handleWeightChange(e.target.value)}
                 className="w-20 text-center bg-white rounded-lg py-1.5 text-[15px] font-semibold outline-none focus:ring-2 focus:ring-iosblue" />
-              <button type="button" onClick={() => setWeightUnit(u => u === 'kg' ? 'lbs' : 'kg')}
+              <button type="button" onClick={() => setWeightUnit(u => u === 'kg' ? 'lb' : 'kg')}
                 className="text-[12px] font-semibold text-iosblue px-2 py-1.5 rounded-lg bg-white">
                 {weightUnit}
               </button>
@@ -1662,6 +1704,7 @@ function candidatesForWorkout(workout, workouts) {
 // Opened by the round + on the workout screen: pick exercises you already
 // have elsewhere and drop them into this workout, or start a brand-new one.
 function AddExerciseSheet({ workout, workouts, onCancel, onAdd, onCreateNew }) {
+  const unit = useWeightUnit();
   const [selectedIds, setSelectedIds] = useState([]);
   const candidates = candidatesForWorkout(workout, workouts);
 
@@ -1712,7 +1755,7 @@ function AddExerciseSheet({ workout, workouts, onCancel, onAdd, onCreateNew }) {
                     <CheckCircle checked={checked} />
                     <span className="flex-1 min-w-0">
                       <span className="block font-semibold text-[15px] truncate">{c.name}</span>
-                      <span className="block text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(c)}</span>
+                      <span className="block text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(c, unit)}</span>
                     </span>
                     <span className="text-[11px] text-iossecondary shrink-0">{c.fromWorkout}</span>
                   </button>
@@ -1741,6 +1784,7 @@ function AddExerciseSheet({ workout, workouts, onCancel, onAdd, onCreateNew }) {
 // Compact, read-only summary of one exercise with a ⚙ that opens its
 // settings — the shape every list of exercises uses outside the checklist.
 function ExerciseListRow({ exercise, isGroupContinuation, onOpenSettings }) {
+  const unit = useWeightUnit();
   return (
     <div className="flex items-center gap-2 py-2.5 border-b border-iosseparator last:border-0">
       <div className="flex-1 min-w-0">
@@ -1752,7 +1796,7 @@ function ExerciseListRow({ exercise, isGroupContinuation, onOpenSettings }) {
             <span className="text-[10px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2 py-0.5 rounded-full shrink-0">Superset</span>
           )}
         </div>
-        <div className="text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(exercise)}</div>
+        <div className="text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(exercise, unit)}</div>
       </div>
       <IconButton onClick={onOpenSettings} title="Exercise settings" className="shrink-0">
         <GearIcon className="w-5 h-5" />
@@ -1776,6 +1820,7 @@ function CheckCircle({ checked }) {
 // tap ⚙ to open everything about it, hold the card to reorder the list.
 function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onToggle, onSetCurrent, onLongPress, onOpenSettings }) {
   const press = useLongPress(onLongPress, onSetCurrent);
+  const unit = useWeightUnit();
 
   return (
     <Card className={`overflow-hidden ${isCurrent ? 'ring-2 ring-iosblue' : ''}`}>
@@ -1791,14 +1836,14 @@ function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onTog
             {isCurrent && <span className="text-iosblue text-[10px] font-bold uppercase tracking-wide shrink-0">Now</span>}
             <div className={`font-semibold text-[15px] truncate ${checked ? 'line-through text-iossecondary' : ''}`}>{exercise.name}</div>
             {exercise.weightKg != null && (
-              <span className="text-[12px] text-iossecondary font-medium shrink-0">{formatWeightKg(exercise.weightKg)} kg ea</span>
+              <span className="text-[12px] text-iossecondary font-medium shrink-0">{formatWeight(exercise.weightKg, unit)} ea</span>
             )}
             {(exercise.supersetWithNext || isGroupContinuation) && (
               <span className="text-[10px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2 py-0.5 rounded-full shrink-0">Superset</span>
             )}
           </div>
           {exercise.description && <div className="text-[13px] text-iossecondary mt-0.5">{exercise.description}</div>}
-          <div className="text-[11px] text-iossecondary mt-0.5 tabular-nums">{exerciseSummary(exercise)}</div>
+          <div className="text-[11px] text-iossecondary mt-0.5 tabular-nums">{exerciseSummary(exercise, unit)}</div>
         </div>
         <IconButton onClick={onOpenSettings} title="Exercise settings" className="shrink-0">
           <GearIcon className="w-5 h-5" />
@@ -1809,7 +1854,7 @@ function ExerciseCard({ exercise, checked, isCurrent, isGroupContinuation, onTog
 }
 
 function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, onSetCurrentExercise, onResetProgress,
-  onSwitchWorkout, workouts, onManage, onSaveWorkout, autoOn, onToggleAuto, onCopyExercise }) {
+  onSwitchWorkout, workouts, onManage, onSaveWorkout, autoOn, onToggleAuto, onCopyExercise, weightUnit, onSetWeightUnit }) {
   const doneCount = workout.exercises.filter(e => progress[e.id]).length;
   const total = workout.exercises.length;
   const [editList, setEditList] = useState(null); // non-null = reorder/edit mode is active
@@ -1974,7 +2019,7 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
                     <span className="text-[10px] font-bold uppercase tracking-wide text-iosorange bg-[#FF950026] px-2 py-0.5 rounded-full shrink-0">Superset</span>
                   )}
                 </div>
-                <div className="text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(exr)}</div>
+                <div className="text-[11px] text-iossecondary truncate tabular-nums">{exerciseSummary(exr, weightUnit)}</div>
               </div>
               <IconButton onClick={() => setSettingsId(exr.id)} title="Exercise settings" className="shrink-0">
                 <GearIcon className="w-5 h-5" />
@@ -2035,7 +2080,10 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
         <div className="text-center text-[15px] font-semibold text-iosblue">{workout.name}</div>
       )}
 
-      <div className="text-center text-[13px] text-iossecondary -mt-1">{doneCount} of {total} done · long-press to reorder</div>
+      <div className="flex items-center justify-between gap-2 -mt-1">
+        <span className="text-[13px] text-iossecondary truncate">{doneCount} of {total} done · long-press to reorder</span>
+        <UnitToggle unit={weightUnit} onChange={onSetWeightUnit} />
+      </div>
 
       <div className="flex flex-col gap-2.5">
         {workout.exercises.map((exr, i) => (
@@ -2065,7 +2113,8 @@ function WorkoutRunView({ workout, progress, currentExercise, onToggleExercise, 
 }
 
 function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExercise, onToggleExercise, onResetProgress, onSetActiveWorkout,
-  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise, autoOn, onToggleAuto, onCopyExercise, onToggleRotation }) {
+  onSaveWorkout, onDeleteWorkout, onSetCurrentExercise, autoOn, onToggleAuto, onCopyExercise, onToggleRotation,
+  weightUnit, onSetWeightUnit }) {
   const [view, setView] = useState('run'); // run | manage | edit
   const [editingId, setEditingId] = useState(null);
 
@@ -2127,6 +2176,8 @@ function WorkoutsTab({ workouts, workoutProgress, activeWorkoutId, currentExerci
       autoOn={autoOn}
       onToggleAuto={onToggleAuto}
       onCopyExercise={onCopyExercise}
+      weightUnit={weightUnit}
+      onSetWeightUnit={onSetWeightUnit}
     />
   );
 }
@@ -2206,6 +2257,7 @@ function App() {
   }
   const nextExercise = getNextExercise(state.activeWorkoutId, currentExercise);
   const autoRun = state.autoRun !== false;
+  const weightUnit = WEIGHT_UNITS.indexOf(state.weightUnit) === -1 ? 'lb' : state.weightUnit;
   // "Nothing ticked off yet" — a workout you haven't started, or one that just
   // finished and cleared itself. The Timer uses it to know when Auto has to
   // wait for a manual Start again (see rearmAuto).
@@ -2213,6 +2265,9 @@ function App() {
 
   function setAutoRun(on) {
     setState(s => ({ ...s, autoRun: on }));
+  }
+  function setWeightUnit(unit) {
+    setState(s => ({ ...s, weightUnit: unit }));
   }
   function completeAutoExercise(exerciseId) {
     toggleExercise(state.activeWorkoutId, exerciseId, true);
@@ -2342,6 +2397,7 @@ function App() {
   }
 
   return (
+    <WeightUnitContext.Provider value={weightUnit}>
     <div className="max-w-md mx-auto min-h-screen flex flex-col px-4 gap-5"
       style={{
         '--bottom-chrome': bottomChrome,
@@ -2362,6 +2418,8 @@ function App() {
           onAutoExerciseComplete={completeAutoExercise}
           onStopAuto={() => setAutoRun(false)}
           onStatus={setTimerStatus}
+          weightUnit={weightUnit}
+          onSetWeightUnit={setWeightUnit}
         />
       </div>
 
@@ -2379,6 +2437,8 @@ function App() {
           onSetCurrentExercise={setCurrentExercise}
           autoOn={autoRun}
           onToggleAuto={() => setAutoRun(!autoRun)}
+          weightUnit={weightUnit}
+          onSetWeightUnit={setWeightUnit}
           onCopyExercise={copyExerciseToWorkout}
           onToggleRotation={toggleWorkoutRotation}
         />
@@ -2390,6 +2450,7 @@ function App() {
       <TabBar tab={tab} onChange={(t) => { blurActiveInput(); setTab(t); }} />
       <CompletionOverlay celebration={celebration} />
     </div>
+    </WeightUnitContext.Provider>
   );
 }
 
